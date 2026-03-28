@@ -1,0 +1,42 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+
+# Go build/test artifacts
+*.test
+*.out
+cover.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependency directory
+/vendor/
+
+# IDE
+.vscode/
+!.vscode/settings.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Outbound specific
+/tmp/
+*.log
