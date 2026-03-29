@@ -8,6 +8,8 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/wu-piyaphon/outbound-api/internal/config"
 	"github.com/wu-piyaphon/outbound-api/internal/database"
+	"github.com/wu-piyaphon/outbound-api/internal/repository"
+	"github.com/wu-piyaphon/outbound-api/internal/service"
 )
 
 func main() {
@@ -30,4 +32,12 @@ func main() {
 	log.Println("Successfully connected to the database")
 
 	database.Migrate(cfg.DatabaseURL)
+
+	signalService := service.NewSignalService(repository.NewSignalRepository(pool))
+
+	rows, err := signalService.GetAllSignals(ctx)
+	if err != nil {
+		log.Fatalf("failed to get signals: %v", err)
+	}
+	log.Print(rows)
 }
