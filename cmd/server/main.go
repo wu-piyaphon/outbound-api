@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -23,6 +27,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	_, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to connect to the database: %v", err)
@@ -33,11 +40,43 @@ func main() {
 
 	database.Migrate(cfg.DatabaseURL)
 
-	signalService := service.NewSignalService(repository.NewSignalRepository(pool))
+	watchlistRepo := repository.NewWatchlistRepository(pool)
+	watchlistService := service.NewWatchlistService(watchlistRepo)
 
-	rows, err := signalService.GetAllSignals(ctx)
+	watchlists, err := watchlistService.GetAllActive(ctx)
 	if err != nil {
-		log.Fatalf("failed to get signals: %v", err)
+		log.Fatalf("failed to get watchlists: %v", err)
 	}
-	log.Print(rows)
+
+	fmt.Print(watchlists)
+
+	// assets := make([]string, len(watchlists[0].Assets))
+	// for i, asset := range watchlists[0].Assets {
+	// 	assets[i] = asset.Symbol
+	// }
+
+	// streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, assets)
+	// if err := streamClient.Connect(streamCtx); err != nil {
+	// 	log.Fatalf("failed to connect to Alpaca stream: %v", err)
+	// }
+
+	// fmt.Println("established connection")
+
+	// client := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
+
+	// bars, err := client.GetBars(assets[0], marketdata.GetBarsRequest{
+	// 	TimeFrame: marketdata.OneDay,
+	// 	Start:     time.Now().AddDate(-1, -2, 0),
+	// 	End:       time.Now(),
+	// })
+	// if err != nil {
+	// 	log.Fatalf("failed to get bars: %v", err)
+	// }
+
+	// log.Printf("bars: %+v", bars)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("shutting down...")
 }

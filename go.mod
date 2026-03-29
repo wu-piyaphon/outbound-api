@@ -5,6 +5,9 @@ go 1.26.1
 require github.com/joho/godotenv v1.5.1
 
 require (
+	cloud.google.com/go v0.121.6 // indirect
+	github.com/alpacahq/alpaca-trade-api-go/v3 v3.9.1 // indirect
+	github.com/coder/websocket v1.8.12 // indirect
 	github.com/georgysavva/scany v1.2.3 // indirect
 	github.com/georgysavva/scany/v2 v2.1.4 // indirect
 	github.com/golang-migrate/migrate/v4 v4.19.1 // indirect
@@ -20,8 +23,12 @@ require (
 	github.com/jackc/pgx/v5 v5.9.1 // indirect
 	github.com/jackc/puddle v1.3.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	github.com/lib/pq v1.10.9 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/vmihailenco/msgpack/v5 v5.3.0 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
