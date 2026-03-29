@@ -28,4 +28,6 @@ func main() {
 	defer pool.Close()
 
 	log.Println("Successfully connected to the database")
+
+	database.Migrate(cfg.DatabaseURL)
 }
