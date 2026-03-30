@@ -9,7 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/joho/godotenv"
+	"github.com/wu-piyaphon/outbound-api/internal/alpaca"
 	"github.com/wu-piyaphon/outbound-api/internal/config"
 	"github.com/wu-piyaphon/outbound-api/internal/database"
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
@@ -27,7 +29,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, streamCancel := context.WithCancel(context.Background())
+	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
@@ -48,32 +50,25 @@ func main() {
 		log.Fatalf("failed to get watchlists: %v", err)
 	}
 
-	fmt.Print(watchlists)
+	streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists)
+	if err := streamClient.Connect(streamCtx); err != nil {
+		log.Fatalf("failed to connect to Alpaca stream: %v", err)
+	}
 
-	// assets := make([]string, len(watchlists[0].Assets))
-	// for i, asset := range watchlists[0].Assets {
-	// 	assets[i] = asset.Symbol
-	// }
+	fmt.Println("established connection")
 
-	// streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, assets)
-	// if err := streamClient.Connect(streamCtx); err != nil {
-	// 	log.Fatalf("failed to connect to Alpaca stream: %v", err)
-	// }
+	client := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
 
-	// fmt.Println("established connection")
+	bars, err := client.GetBars(watchlists[0], marketdata.GetBarsRequest{
+		TimeFrame: marketdata.OneDay,
+		Start:     time.Now().AddDate(-1, -2, 0),
+		End:       time.Now(),
+	})
+	if err != nil {
+		log.Fatalf("failed to get bars: %v", err)
+	}
 
-	// client := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
-
-	// bars, err := client.GetBars(assets[0], marketdata.GetBarsRequest{
-	// 	TimeFrame: marketdata.OneDay,
-	// 	Start:     time.Now().AddDate(-1, -2, 0),
-	// 	End:       time.Now(),
-	// })
-	// if err != nil {
-	// 	log.Fatalf("failed to get bars: %v", err)
-	// }
-
-	// log.Printf("bars: %+v", bars)
+	log.Printf("bars: %+v", bars)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
