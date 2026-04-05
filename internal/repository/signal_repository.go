@@ -11,6 +11,7 @@ import (
 
 type SignalRepository interface {
 	GetAll(ctx context.Context) ([]model.Signal, error)
+	Create(ctx context.Context, signal *model.Signal) error
 }
 
 type signalRepository struct {
@@ -30,4 +31,14 @@ func (r *signalRepository) GetAll(ctx context.Context) ([]model.Signal, error) {
 	}
 
 	return signals, nil
+}
+
+func (r *signalRepository) Create(ctx context.Context, signal *model.Signal) error {
+	_, err := r.pool.Exec(ctx, "INSERT INTO signals (id, symbol, side, price_at_signal, indicators, is_executed, reasoning) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+		signal.ID, signal.Symbol, signal.Side, signal.PriceAtSignal, signal.Indicators, signal.IsExecuted, signal.Reasoning)
+	if err != nil {
+		return fmt.Errorf("Create: %w", err)
+	}
+
+	return nil
 }
