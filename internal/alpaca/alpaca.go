@@ -16,10 +16,10 @@ func NewAlpacaClient(APIKey, APISecret, BaseURL string) *alpaca.Client {
 	return c
 }
 
-func NewStocksStreamClient(APIKey, APISecret string, symbols []string) *stream.StocksClient {
+func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan chan<- stream.Bar) *stream.StocksClient {
 
 	barHandler := func(bar stream.Bar) {
-		// TODO: Handle incoming bar data here
+		barChan <- bar
 	}
 
 	c := stream.NewStocksClient(
