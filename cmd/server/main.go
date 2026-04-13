@@ -81,7 +81,7 @@ func main() {
 			for {
 				select {
 				case bar := <-barChan:
-					log.Printf("Received bar for %s at %s: close=%.2f", bar.Symbol, bar.Timestamp.Format(time.RFC3339), bar.Close)
+					log.Printf("Received bar for %s at %s: close=%.3f", bar.Symbol, bar.Timestamp.Format(time.RFC3339), bar.Close)
 					signal, err := signalService.EvaluateSignal(streamCtx, bar.Symbol)
 					if err != nil {
 						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
