@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/joho/godotenv"
 	"github.com/wu-piyaphon/outbound-api/internal/alpaca"
 	"github.com/wu-piyaphon/outbound-api/internal/config"
@@ -50,28 +49,48 @@ func main() {
 		log.Fatalf("failed to get watchlists: %v", err)
 	}
 
-	streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists)
-	if err := streamClient.Connect(streamCtx); err != nil {
-		log.Fatalf("failed to connect to Alpaca stream: %v", err)
-	}
+	marketDataClient := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
+	alpacaClient := alpaca.NewAlpacaClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, cfg.AlpacaBaseURL)
+	signalService := service.NewSignalService(repository.NewSignalRepository(pool), marketDataClient)
+	tradeService := service.NewTradeService(repository.NewTradeRepository(pool), alpacaClient)
 
-	fmt.Println("established connection")
+	barChan := make(chan stream.Bar)
 
-	client := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
+	streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists, barChan)
 
-	bars, err := client.GetBars(watchlists[0], marketdata.GetBarsRequest{
-		TimeFrame: marketdata.OneDay,
-		Start:     time.Now().AddDate(-1, -2, 0),
-		End:       time.Now(),
-	})
-	if err != nil {
-		log.Fatalf("failed to get bars: %v", err)
-	}
-
-	log.Printf("bars: %+v", bars)
-
+	go func() {
+		if err := streamClient.Connect(streamCtx); err != nil {
+			log.Printf("Alpaca stream client stopped with error: %v", err)
+		}
+	}()
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	const numWorkers = 5
+
+	for range numWorkers {
+		go func() {
+			for {
+				select {
+				case bar := <-barChan:
+					log.Printf("Received bar for %s at %s: close=%.2f", bar.Symbol, bar.Timestamp.Format(time.RFC3339), bar.Close)
+					signal, err := signalService.EvaluateSignal(streamCtx, bar.Symbol)
+					if err != nil {
+						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
+					}
+
+					if signal != nil {
+						tradeService.ExecuteTrade(streamCtx, signal)
+					}
+
+				case <-streamCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	<-quit
 	log.Println("shutting down...")
+	streamCancel()
 }
