@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
@@ -14,10 +13,10 @@ type TradeRepository interface {
 }
 
 type tradeRepository struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewTradeRepository(pool *pgxpool.Pool) TradeRepository {
+func NewTradeRepository(pool DBTX) TradeRepository {
 	return &tradeRepository{pool: pool}
 }
 
@@ -45,7 +44,7 @@ func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 		trade.CreatedAt,         // $16
 	}
 
-	_, err := t.pool.Exec(ctx, insertTradeQuery, args...)
+	_, err := GetDB(ctx, t.pool).Exec(ctx, insertTradeQuery, args...)
 	if err != nil {
 		return fmt.Errorf("Create: %w", err)
 	}
@@ -62,7 +61,7 @@ const getOpenBuyTradesBySymbolQuery = `
 	)`
 
 func (t *tradeRepository) GetOpenBuyTradesBySymbol(ctx context.Context, symbol string) ([]*model.Trade, error) {
-	rows, err := t.pool.Query(ctx, getOpenBuyTradesBySymbolQuery, symbol)
+	rows, err := GetDB(ctx, t.pool).Query(ctx, getOpenBuyTradesBySymbolQuery, symbol)
 	if err != nil {
 		return nil, fmt.Errorf("GetOpenBuyTradesBySymbol: %w", err)
 	}

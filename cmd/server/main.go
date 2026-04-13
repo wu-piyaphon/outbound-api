@@ -13,6 +13,7 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/alpaca"
 	"github.com/wu-piyaphon/outbound-api/internal/config"
 	"github.com/wu-piyaphon/outbound-api/internal/database"
+	"github.com/wu-piyaphon/outbound-api/internal/model"
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 	"github.com/wu-piyaphon/outbound-api/internal/service"
 )
@@ -49,10 +50,17 @@ func main() {
 		log.Fatalf("failed to get watchlists: %v", err)
 	}
 
+	accountTransferRepo := repository.NewAccountTransferRepository(pool)
+	tradeRepo := repository.NewTradeRepository(pool)
+	signalRepo := repository.NewSignalRepository(pool)
+	transactor := database.NewTransactor(pool)
+
 	marketDataClient := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
 	alpacaClient := alpaca.NewAlpacaClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, cfg.AlpacaBaseURL)
-	signalService := service.NewSignalService(repository.NewSignalRepository(pool), marketDataClient)
-	tradeService := service.NewTradeService(repository.NewTradeRepository(pool), alpacaClient)
+
+	signalService := service.NewSignalService(signalRepo, marketDataClient)
+	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, transactor, alpacaClient)
+	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
 	barChan := make(chan stream.Bar)
 
@@ -79,8 +87,27 @@ func main() {
 						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
 					}
 
+					availableBudget, err := accountTransferService.GetAvailableBudget(streamCtx)
+					if err != nil {
+						log.Printf("failed to get active account transfer: %v", err)
+					}
+
 					if signal != nil {
-						tradeService.ExecuteTrade(streamCtx, signal)
+						switch signal.Side {
+						case model.SideBuy:
+							_, err := tradeService.ExecuteBuyTrade(streamCtx, signal, availableBudget)
+							if err != nil {
+								log.Printf("failed to execute buy trade for %s: %v", signal.Symbol, err)
+							}
+						case model.SideSell:
+							_, err := tradeService.ExecuteSellTrade(streamCtx, signal)
+							if err != nil {
+								log.Printf("failed to execute sell trade for %s: %v", signal.Symbol, err)
+							}
+						default:
+							log.Printf("unknown signal side for %s: %s", signal.Symbol, signal.Side)
+							continue
+						}
 					}
 
 				case <-streamCtx.Done():
