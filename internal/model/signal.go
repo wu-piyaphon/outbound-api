@@ -10,7 +10,7 @@ import (
 type Signal struct {
 	ID            uuid.UUID        `db:"id" json:"id"`
 	Symbol        string           `db:"symbol" json:"symbol"`
-	Side          string           `db:"side" json:"side"`
+	Side          Side             `db:"side" json:"side"`
 	PriceAtSignal decimal.Decimal  `db:"price_at_signal" json:"price_at_signal"`
 	Indicators    SignalIndicators `db:"indicators" json:"indicators"`
 	IsExecuted    bool             `db:"is_executed" json:"is_executed"`
