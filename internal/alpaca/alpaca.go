@@ -1,6 +1,8 @@
 package alpaca
 
 import (
+	"fmt"
+
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
@@ -29,6 +31,28 @@ func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan c
 	)
 
 	return c
+}
+
+func SubscribeToBars(c *stream.StocksClient, barChan chan<- stream.Bar, symbols ...string) error {
+	barHandler := func(bar stream.Bar) {
+		barChan <- bar
+	}
+
+	err := c.SubscribeToBars(barHandler, symbols...)
+	if err != nil {
+		return fmt.Errorf("SubscribeToBars: %w", err)
+	}
+
+	return nil
+}
+
+func UnsubscribeFromBars(c *stream.StocksClient, symbols ...string) error {
+	err := c.UnsubscribeFromBars(symbols...)
+	if err != nil {
+		return fmt.Errorf("UnsubscribeFromBars: %w", err)
+	}
+
+	return nil
 }
 
 func NewMarketDataClient(APIKey, APISecret string) *marketdata.Client {

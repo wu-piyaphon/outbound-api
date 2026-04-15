@@ -74,6 +74,74 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		subscribed := make(map[string]struct{})
+		for _, s := range watchlists {
+			subscribed[s] = struct{}{}
+		}
+
+		for {
+			select {
+			case <-ticker.C:
+				fetchedWatchlists, err := watchlistService.GetAllActive(streamCtx)
+				if err != nil {
+					log.Printf("failed to get watchlists: %v", err)
+					continue
+				}
+
+				currentSet := make(map[string]struct{})
+				for _, s := range fetchedWatchlists {
+					currentSet[s] = struct{}{}
+				}
+
+				newSubscribedSymbols := []string{}
+				unsubscribedSymbols := []string{}
+
+				for s := range currentSet {
+					if _, exist := subscribed[s]; !exist {
+						newSubscribedSymbols = append(newSubscribedSymbols, s)
+					}
+				}
+
+				for s := range subscribed {
+					if _, exist := currentSet[s]; !exist {
+						unsubscribedSymbols = append(unsubscribedSymbols, s)
+					}
+				}
+
+				if len(newSubscribedSymbols) > 0 {
+					err = alpaca.SubscribeToBars(streamClient, barChan, newSubscribedSymbols...)
+					if err != nil {
+						log.Printf("failed to subscribe to new symbols: %v", err)
+					} else {
+						log.Printf("subscribed to new symbols: %v", newSubscribedSymbols)
+						for _, s := range newSubscribedSymbols {
+							subscribed[s] = struct{}{}
+						}
+					}
+				}
+
+				if len(unsubscribedSymbols) > 0 {
+					err = alpaca.UnsubscribeFromBars(streamClient, unsubscribedSymbols...)
+					if err != nil {
+						log.Printf("failed to unsubscribe from symbols: %v", err)
+					} else {
+						log.Printf("unsubscribed from symbols: %v", unsubscribedSymbols)
+						for _, s := range unsubscribedSymbols {
+							delete(subscribed, s)
+						}
+					}
+				}
+
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
+
 	const numWorkers = 5
 
 	for range numWorkers {
@@ -81,7 +149,6 @@ func main() {
 			for {
 				select {
 				case bar := <-barChan:
-					log.Printf("Received bar for %s at %s: close=%.3f", bar.Symbol, bar.Timestamp.Format(time.RFC3339), bar.Close)
 					signal, err := signalService.EvaluateSignal(streamCtx, bar.Symbol)
 					if err != nil {
 						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
