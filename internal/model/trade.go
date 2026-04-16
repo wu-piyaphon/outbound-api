@@ -20,6 +20,8 @@ type Trade struct {
 	AvgFillPrice      *decimal.Decimal `db:"avg_fill_price" json:"avg_fill_price"`
 	CommissionFee     *decimal.Decimal `db:"commission_fee" json:"commission_fee"`
 	FXFeeAmortized    *decimal.Decimal `db:"fx_fee_amortized" json:"fx_fee_amortized"`
+	StopLoss          *decimal.Decimal `db:"stop_loss" json:"stop_loss"`
+	TakeProfit        *decimal.Decimal `db:"take_profit" json:"take_profit"`
 	Status            Status           `db:"status" json:"status"`
 	Metadata          map[string]any   `db:"metadata" json:"metadata"`
 	FilledAt          *time.Time       `db:"filled_at" json:"filled_at"`
