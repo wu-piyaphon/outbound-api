@@ -6,35 +6,34 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func CalculateEMA(prices []decimal.Decimal, period int) (decimal.Decimal, error) {
-
+func CalculateEMA(values []decimal.Decimal, period int) (decimal.Decimal, error) {
 	if period <= 0 {
 		return decimal.Zero, errors.New("Period is less than zero. Unable to calculate EMA.")
 	}
 
-	if len(prices) == 0 {
-		return decimal.Zero, errors.New("Prices array is empty. Unable to calculate EMA.")
+	if len(values) == 0 {
+		return decimal.Zero, errors.New("Values array is empty. Unable to calculate EMA.")
 	}
 
-	if len(prices) < period {
-		return decimal.Zero, errors.New("Not enough price data to calculate EMA.")
+	if len(values) < period {
+		return decimal.Zero, errors.New("Not enough values to calculate EMA.")
 	}
 
 	multiplier := decimal.NewFromInt(2).Div(decimal.NewFromInt(int64(period + 1)))
 
-	ema := calculateSMA(prices[:period])
+	ema := calculateSMA(values[:period])
 
-	for _, price := range prices[period:] {
-		ema = price.Sub(ema).Mul(multiplier).Add(ema)
+	for _, value := range values[period:] {
+		ema = value.Sub(ema).Mul(multiplier).Add(ema)
 	}
 
 	return ema, nil
 }
 
-func calculateSMA(prices []decimal.Decimal) decimal.Decimal {
+func calculateSMA(values []decimal.Decimal) decimal.Decimal {
 	var sum decimal.Decimal
-	for _, price := range prices {
-		sum = sum.Add(price)
+	for _, value := range values {
+		sum = sum.Add(value)
 	}
-	return sum.Div(decimal.NewFromInt(int64(len(prices))))
+	return sum.Div(decimal.NewFromInt(int64(len(values))))
 }
