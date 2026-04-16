@@ -21,4 +21,5 @@ type Signal struct {
 type SignalIndicators struct {
 	EMA decimal.Decimal `json:"ema"`
 	RSI decimal.Decimal `json:"rsi"`
+	ATR decimal.Decimal `json:"atr"`
 }

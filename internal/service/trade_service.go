@@ -110,6 +110,9 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		return nil, fmt.Errorf("ExecuteBuyTrade: %w", err)
 	}
 
+	stopLoss := signal.PriceAtSignal.Sub(signal.Indicators.ATR.Mul(decimal.NewFromFloat(2)))
+	takeProfit := signal.PriceAtSignal.Add(signal.Indicators.ATR.Mul(decimal.NewFromFloat(3)))
+
 	trade := &model.Trade{
 		ID:                uuid.New(),
 		ParentID:          nil,
@@ -123,6 +126,8 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		AvgFillPrice:      nil,
 		CommissionFee:     nil,
 		FXFeeAmortized:    nil,
+		StopLoss:          &stopLoss,
+		TakeProfit:        &takeProfit,
 		Status:            model.StatusPending,
 		Metadata:          nil,
 		FilledAt:          nil,
