@@ -21,8 +21,8 @@ func NewTradeRepository(pool DBTX) TradeRepository {
 }
 
 const insertTradeQuery = `
-	INSERT INTO trades (id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, status, metadata, filled_at, created_at) 
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`
+	INSERT INTO trades (id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at) 
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`
 
 func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 	args := []any{
@@ -38,10 +38,12 @@ func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 		trade.AvgFillPrice,      // $10
 		trade.CommissionFee,     // $11
 		trade.FXFeeAmortized,    // $12
-		trade.Status,            // $13
-		trade.Metadata,          // $14
-		trade.FilledAt,          // $15
-		trade.CreatedAt,         // $16
+		trade.StopLoss,          // $13
+		trade.TakeProfit,        // $14
+		trade.Status,            // $15
+		trade.Metadata,          // $16
+		trade.FilledAt,          // $17
+		trade.CreatedAt,         // $18
 	}
 
 	_, err := GetDB(ctx, t.pool).Exec(ctx, insertTradeQuery, args...)
@@ -53,7 +55,7 @@ func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 }
 
 const getOpenBuyTradesBySymbolQuery = `
-	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, status, metadata, filled_at, created_at
+	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at
 	FROM trades
 	WHERE symbol = $1 AND side = 'buy' AND status = 'filled' AND NOT EXISTS (
 		SELECT 1 FROM trades sell
@@ -83,6 +85,8 @@ func (t *tradeRepository) GetOpenBuyTradesBySymbol(ctx context.Context, symbol s
 			&trade.AvgFillPrice,
 			&trade.CommissionFee,
 			&trade.FXFeeAmortized,
+			&trade.StopLoss,
+			&trade.TakeProfit,
 			&trade.Status,
 			&trade.Metadata,
 			&trade.FilledAt,
