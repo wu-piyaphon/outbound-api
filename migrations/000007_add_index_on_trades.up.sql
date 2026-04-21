@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX trades_one_sell_per_buy ON trades (parent_id) WHERE side = 'sell';

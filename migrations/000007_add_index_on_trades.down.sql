@@ -1,0 +1,1 @@
+DROP INDEX trades_one_sell_per_buy;
