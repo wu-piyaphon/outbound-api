@@ -13,7 +13,8 @@ import (
 
 type TradeService interface {
 	ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error)
-	ExecuteSellTrade(ctx context.Context, signal *model.Signal) ([]*model.Trade, error)
+	ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error)
+	CheckExitConditions(ctx context.Context, symbol string, currentPrice decimal.Decimal) ([]*model.ExitSignal, error)
 }
 
 type tradeService struct {
@@ -27,62 +28,48 @@ func NewTradeService(tradeRepository repository.TradeRepository, accountTransfer
 	return &tradeService{tradeRepository: tradeRepository, accountTransferRepository: accountTransferRepository, transactor: transactor, alpacaClient: alpacaClient}
 }
 
-func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signal) ([]*model.Trade, error) {
-	trades, err := t.tradeRepository.GetOpenBuyTradesBySymbol(ctx, signal.Symbol)
+func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error) {
+	sellTrade := &model.Trade{
+		ID:                uuid.New(),
+		ParentID:          &trade.ID,
+		SignalID:          &signal.ID,
+		AccountTransferID: nil,
+		AlpacaOrderID:     nil,
+		Symbol:            signal.Symbol,
+		Side:              string(model.SideSell),
+		Quantity:          trade.Quantity,
+		PricePerUnit:      &signal.PriceAtSignal,
+		AvgFillPrice:      nil,
+		CommissionFee:     nil,
+		FXFeeAmortized:    nil,
+		Status:            model.StatusPending,
+		Metadata:          nil,
+		FilledAt:          nil,
+		CreatedAt:         signal.CreatedAt,
+	}
+
+	alpacaOrder := alpaca.PlaceOrderRequest{
+		Symbol:      signal.Symbol,
+		Qty:         &sellTrade.Quantity,
+		Side:        alpaca.Sell,
+		Type:        alpaca.Market,
+		TimeInForce: alpaca.Day,
+	}
+
+	placedOrder, err := t.alpacaClient.PlaceOrder(alpacaOrder)
 	if err != nil {
 		return nil, fmt.Errorf("ExecuteSellTrade: %w", err)
 	}
 
-	if len(trades) == 0 {
-		return nil, nil
+	sellTrade.Status = model.StatusPending
+	sellTrade.AlpacaOrderID = &placedOrder.ID
+
+	err = t.tradeRepository.Create(ctx, *sellTrade)
+	if err != nil {
+		return nil, fmt.Errorf("ExecuteSellTrade: %w", err)
 	}
 
-	var executedTrades []*model.Trade
-
-	for _, openBuyTrade := range trades {
-		trade := &model.Trade{
-			ID:                uuid.New(),
-			ParentID:          &openBuyTrade.ID,
-			SignalID:          &signal.ID,
-			AccountTransferID: nil,
-			AlpacaOrderID:     nil,
-			Symbol:            signal.Symbol,
-			Side:              string(model.SideSell),
-			Quantity:          openBuyTrade.Quantity,
-			PricePerUnit:      &signal.PriceAtSignal,
-			AvgFillPrice:      nil,
-			CommissionFee:     nil,
-			FXFeeAmortized:    nil,
-			Status:            model.StatusPending,
-			Metadata:          nil,
-			FilledAt:          nil,
-			CreatedAt:         signal.CreatedAt,
-		}
-
-		alpacaOrder := alpaca.PlaceOrderRequest{
-			Symbol:      signal.Symbol,
-			Qty:         &trade.Quantity,
-			Side:        alpaca.Sell,
-			Type:        alpaca.Market,
-			TimeInForce: alpaca.Day,
-		}
-
-		placedOrder, err := t.alpacaClient.PlaceOrder(alpacaOrder)
-		if err != nil {
-			return nil, fmt.Errorf("ExecuteSellTrade: %w", err)
-		}
-
-		trade.Status = model.StatusPending
-		trade.AlpacaOrderID = &placedOrder.ID
-
-		err = t.tradeRepository.Create(ctx, *trade)
-		if err != nil {
-			return nil, fmt.Errorf("ExecuteSellTrade: %w", err)
-		}
-		executedTrades = append(executedTrades, trade)
-	}
-
-	return executedTrades, nil
+	return sellTrade, nil
 }
 
 func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error) {
@@ -153,4 +140,28 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 	}
 
 	return trade, nil
+}
+
+func (t *tradeService) CheckExitConditions(ctx context.Context, symbol string, currentPrice decimal.Decimal) ([]*model.ExitSignal, error) {
+	openTrades, err := t.tradeRepository.GetOpenBuyTradesBySymbol(ctx, symbol)
+	if err != nil {
+		return nil, fmt.Errorf("CheckExitConditions: %w", err)
+	}
+
+	var exitSignals []*model.ExitSignal
+	for _, trade := range openTrades {
+		if trade.StopLoss != nil && currentPrice.LessThanOrEqual(*trade.StopLoss) {
+			exitSignals = append(exitSignals, &model.ExitSignal{
+				Trade:  trade,
+				Reason: "stop_loss",
+			})
+		} else if trade.TakeProfit != nil && currentPrice.GreaterThanOrEqual(*trade.TakeProfit) {
+			exitSignals = append(exitSignals, &model.ExitSignal{
+				Trade:  trade,
+				Reason: "take_profit",
+			})
+		}
+	}
+
+	return exitSignals, nil
 }

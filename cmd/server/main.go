@@ -10,10 +10,10 @@ import (
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/joho/godotenv"
+	"github.com/shopspring/decimal"
 	"github.com/wu-piyaphon/outbound-api/internal/alpaca"
 	"github.com/wu-piyaphon/outbound-api/internal/config"
 	"github.com/wu-piyaphon/outbound-api/internal/database"
-	"github.com/wu-piyaphon/outbound-api/internal/model"
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 	"github.com/wu-piyaphon/outbound-api/internal/service"
 )
@@ -149,7 +149,26 @@ func main() {
 			for {
 				select {
 				case bar := <-barChan:
-					signal, err := signalService.EvaluateSignal(streamCtx, bar.Symbol)
+					exitSignal, err := tradeService.CheckExitConditions(streamCtx, bar.Symbol, decimal.NewFromFloat(bar.Close))
+					if err != nil {
+						log.Printf("failed to check exit conditions for %s: %v", bar.Symbol, err)
+					}
+
+					for _, signal := range exitSignal {
+						log.Printf("Exit signal for %s: TradeID=%s, Reason=%s", signal.Trade.Symbol, signal.Trade.ID, signal.Reason)
+						sellSignal, err := signalService.CreateSellSignal(streamCtx, signal.Trade.Symbol, decimal.NewFromFloat(bar.Close), signal.Reason)
+						if err != nil {
+							log.Printf("failed to create sell signal for %s: %v", signal.Trade.Symbol, err)
+							continue
+						}
+
+						_, err = tradeService.ExecuteSellTrade(streamCtx, sellSignal, signal.Trade)
+						if err != nil {
+							log.Printf("failed to execute sell trade for %s: %v", sellSignal.Symbol, err)
+						}
+					}
+
+					entrySignal, err := signalService.EvaluateBuySignal(streamCtx, bar.Symbol)
 					if err != nil {
 						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
 					}
@@ -159,21 +178,10 @@ func main() {
 						log.Printf("failed to get active account transfer: %v", err)
 					}
 
-					if signal != nil {
-						switch signal.Side {
-						case model.SideBuy:
-							_, err := tradeService.ExecuteBuyTrade(streamCtx, signal, availableBudget)
-							if err != nil {
-								log.Printf("failed to execute buy trade for %s: %v", signal.Symbol, err)
-							}
-						case model.SideSell:
-							_, err := tradeService.ExecuteSellTrade(streamCtx, signal)
-							if err != nil {
-								log.Printf("failed to execute sell trade for %s: %v", signal.Symbol, err)
-							}
-						default:
-							log.Printf("unknown signal side for %s: %s", signal.Symbol, signal.Side)
-							continue
+					if entrySignal != nil {
+						_, err := tradeService.ExecuteBuyTrade(streamCtx, entrySignal, availableBudget)
+						if err != nil {
+							log.Printf("failed to execute buy trade for %s: %v", entrySignal.Symbol, err)
 						}
 					}
 

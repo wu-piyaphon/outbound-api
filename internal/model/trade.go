@@ -27,3 +27,8 @@ type Trade struct {
 	FilledAt          *time.Time       `db:"filled_at" json:"filled_at"`
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`
 }
+
+type ExitSignal struct {
+	Trade  *Trade
+	Reason string
+}

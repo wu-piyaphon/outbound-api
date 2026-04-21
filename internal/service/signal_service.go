@@ -15,7 +15,8 @@ import (
 
 type SignalService interface {
 	GetAllSignals(ctx context.Context) ([]model.Signal, error)
-	EvaluateSignal(ctx context.Context, symbol string) (*model.Signal, error)
+	CreateSellSignal(ctx context.Context, symbol string, priceAtSignal decimal.Decimal, reasoning string) (*model.Signal, error)
+	EvaluateBuySignal(ctx context.Context, symbol string) (*model.Signal, error)
 }
 
 type signalService struct {
@@ -35,7 +36,25 @@ func (s *signalService) GetAllSignals(ctx context.Context) ([]model.Signal, erro
 	return rows, nil
 }
 
-func (s *signalService) EvaluateSignal(ctx context.Context, symbol string) (*model.Signal, error) {
+func (s *signalService) CreateSellSignal(ctx context.Context, symbol string, priceAtSignal decimal.Decimal, reasoning string) (*model.Signal, error) {
+	signal := &model.Signal{
+		ID:            uuid.New(),
+		Symbol:        symbol,
+		Side:          model.SideSell,
+		PriceAtSignal: priceAtSignal,
+		IsExecuted:    false,
+		Reasoning:     &reasoning,
+	}
+
+	err := s.signalRepo.Create(ctx, signal)
+	if err != nil {
+		return nil, fmt.Errorf("Create: %w", err)
+	}
+
+	return signal, nil
+}
+
+func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string) (*model.Signal, error) {
 	bars, err := s.marketData.GetBars(symbol, marketdata.GetBarsRequest{
 		TimeFrame: marketdata.OneDay,
 		Start:     time.Now().AddDate(-1, -2, 0),
@@ -81,7 +100,7 @@ func (s *signalService) EvaluateSignal(ctx context.Context, symbol string) (*mod
 		signal := &model.Signal{
 			ID:            uuid.New(),
 			Symbol:        symbol,
-			Side:          "buy",
+			Side:          model.SideBuy,
 			PriceAtSignal: currentPrice,
 			Indicators:    model.SignalIndicators{EMA: ema, RSI: rsi, ATR: atr},
 			IsExecuted:    false,
