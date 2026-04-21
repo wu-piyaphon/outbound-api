@@ -43,7 +43,9 @@ func (s *signalService) CreateSellSignal(ctx context.Context, symbol string, pri
 		Side:          model.SideSell,
 		PriceAtSignal: priceAtSignal,
 		IsExecuted:    false,
+		Indicators:    model.SignalIndicators{},
 		Reasoning:     &reasoning,
+		CreatedAt:     time.Now().UTC(),
 	}
 
 	err := s.signalRepo.Create(ctx, signal)
@@ -105,6 +107,7 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string) (*
 			Indicators:    model.SignalIndicators{EMA: ema, RSI: rsi, ATR: atr},
 			IsExecuted:    false,
 			Reasoning:     &reasoning,
+			CreatedAt:     time.Now().UTC(),
 		}
 
 		err := s.signalRepo.Create(ctx, signal)

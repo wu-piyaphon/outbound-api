@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -59,7 +60,7 @@ func main() {
 	alpacaClient := alpaca.NewAlpacaClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, cfg.AlpacaBaseURL)
 
 	signalService := service.NewSignalService(signalRepo, marketDataClient)
-	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, transactor, alpacaClient)
+	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
 	barChan := make(chan stream.Bar)
@@ -149,23 +150,9 @@ func main() {
 			for {
 				select {
 				case bar := <-barChan:
-					exitSignal, err := tradeService.CheckExitConditions(streamCtx, bar.Symbol, decimal.NewFromFloat(bar.Close))
+					err := tradeService.EvaluateAndExecuteExits(streamCtx, bar.Symbol, decimal.NewFromFloat(bar.Close))
 					if err != nil {
 						log.Printf("failed to check exit conditions for %s: %v", bar.Symbol, err)
-					}
-
-					for _, signal := range exitSignal {
-						log.Printf("Exit signal for %s: TradeID=%s, Reason=%s", signal.Trade.Symbol, signal.Trade.ID, signal.Reason)
-						sellSignal, err := signalService.CreateSellSignal(streamCtx, signal.Trade.Symbol, decimal.NewFromFloat(bar.Close), signal.Reason)
-						if err != nil {
-							log.Printf("failed to create sell signal for %s: %v", signal.Trade.Symbol, err)
-							continue
-						}
-
-						_, err = tradeService.ExecuteSellTrade(streamCtx, sellSignal, signal.Trade)
-						if err != nil {
-							log.Printf("failed to execute sell trade for %s: %v", sellSignal.Symbol, err)
-						}
 					}
 
 					entrySignal, err := signalService.EvaluateBuySignal(streamCtx, bar.Symbol)
@@ -191,6 +178,11 @@ func main() {
 			}
 		}()
 	}
+
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	go http.ListenAndServe(":8080", nil)
 
 	<-quit
 	log.Println("shutting down...")

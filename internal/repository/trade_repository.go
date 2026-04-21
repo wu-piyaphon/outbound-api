@@ -60,7 +60,8 @@ const getOpenBuyTradesBySymbolQuery = `
 	WHERE symbol = $1 AND side = 'buy' AND status = 'filled' AND NOT EXISTS (
 		SELECT 1 FROM trades sell
 		WHERE sell.side = 'sell' AND sell.parent_id = trades.id 
-	)`
+	)
+	FOR UPDATE SKIP LOCKED`
 
 func (t *tradeRepository) GetOpenBuyTradesBySymbol(ctx context.Context, symbol string) ([]*model.Trade, error) {
 	rows, err := GetDB(ctx, t.pool).Query(ctx, getOpenBuyTradesBySymbolQuery, symbol)

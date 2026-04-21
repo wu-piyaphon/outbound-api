@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
@@ -14,18 +17,19 @@ import (
 type TradeService interface {
 	ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error)
 	ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error)
-	CheckExitConditions(ctx context.Context, symbol string, currentPrice decimal.Decimal) ([]*model.ExitSignal, error)
+	EvaluateAndExecuteExits(ctx context.Context, symbol string, currentPrice decimal.Decimal) error
 }
 
 type tradeService struct {
 	tradeRepository           repository.TradeRepository
 	accountTransferRepository repository.AccountTransferRepository
+	signalRepository          repository.SignalRepository
 	transactor                repository.Transactor
 	alpacaClient              *alpaca.Client
 }
 
-func NewTradeService(tradeRepository repository.TradeRepository, accountTransferRepository repository.AccountTransferRepository, transactor repository.Transactor, alpacaClient *alpaca.Client) TradeService {
-	return &tradeService{tradeRepository: tradeRepository, accountTransferRepository: accountTransferRepository, transactor: transactor, alpacaClient: alpacaClient}
+func NewTradeService(tradeRepository repository.TradeRepository, accountTransferRepository repository.AccountTransferRepository, signalRepository repository.SignalRepository, transactor repository.Transactor, alpacaClient *alpaca.Client) TradeService {
+	return &tradeService{tradeRepository: tradeRepository, accountTransferRepository: accountTransferRepository, signalRepository: signalRepository, transactor: transactor, alpacaClient: alpacaClient}
 }
 
 func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error) {
@@ -70,6 +74,11 @@ func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signa
 	}
 
 	return sellTrade, nil
+}
+
+func isUniqueConstraintError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error) {
@@ -142,26 +151,59 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 	return trade, nil
 }
 
-func (t *tradeService) CheckExitConditions(ctx context.Context, symbol string, currentPrice decimal.Decimal) ([]*model.ExitSignal, error) {
-	openTrades, err := t.tradeRepository.GetOpenBuyTradesBySymbol(ctx, symbol)
-	if err != nil {
-		return nil, fmt.Errorf("CheckExitConditions: %w", err)
-	}
-
-	var exitSignals []*model.ExitSignal
-	for _, trade := range openTrades {
-		if trade.StopLoss != nil && currentPrice.LessThanOrEqual(*trade.StopLoss) {
-			exitSignals = append(exitSignals, &model.ExitSignal{
-				Trade:  trade,
-				Reason: "stop_loss",
-			})
-		} else if trade.TakeProfit != nil && currentPrice.GreaterThanOrEqual(*trade.TakeProfit) {
-			exitSignals = append(exitSignals, &model.ExitSignal{
-				Trade:  trade,
-				Reason: "take_profit",
-			})
+func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol string, currentPrice decimal.Decimal) error {
+	err := t.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		openTrades, err := t.tradeRepository.GetOpenBuyTradesBySymbol(txCtx, symbol)
+		if err != nil {
+			return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
 		}
+
+		var exitSignals []*model.ExitSignal
+		for _, trade := range openTrades {
+			if trade.StopLoss != nil && currentPrice.LessThanOrEqual(*trade.StopLoss) {
+				exitSignals = append(exitSignals, &model.ExitSignal{
+					Trade:  trade,
+					Reason: "stop_loss",
+				})
+			} else if trade.TakeProfit != nil && currentPrice.GreaterThanOrEqual(*trade.TakeProfit) {
+				exitSignals = append(exitSignals, &model.ExitSignal{
+					Trade:  trade,
+					Reason: "take_profit",
+				})
+			}
+		}
+
+		for _, signal := range exitSignals {
+			sellSignal := &model.Signal{
+				ID:            uuid.New(),
+				Reasoning:     &signal.Reason,
+				Symbol:        signal.Trade.Symbol,
+				Side:          model.SideSell,
+				PriceAtSignal: currentPrice,
+				IsExecuted:    false,
+				CreatedAt:     time.Now().UTC(),
+			}
+
+			err := t.signalRepository.Create(txCtx, sellSignal)
+			if err != nil {
+				return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
+			}
+
+			_, err = t.ExecuteSellTrade(txCtx, sellSignal, signal.Trade)
+			if err != nil {
+				if isUniqueConstraintError(err) {
+					continue
+				}
+
+				return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
 	}
 
-	return exitSignals, nil
+	return nil
 }
