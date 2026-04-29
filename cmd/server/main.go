@@ -162,8 +162,9 @@ func main() {
 					}
 
 					availableBudget, err := accountTransferService.GetAvailableBudget(streamCtx)
-					if err != nil {
+					if err != nil || availableBudget == nil {
 						log.Printf("failed to get active account transfer: %v", err)
+						continue
 					}
 
 					if entrySignal != nil {

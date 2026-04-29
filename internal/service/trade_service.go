@@ -38,7 +38,7 @@ func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signa
 		ID:                uuid.New(),
 		ParentID:          &trade.ID,
 		SignalID:          &signal.ID,
-		AccountTransferID: nil,
+		AccountTransferID: trade.AccountTransferID,
 		AlpacaOrderID:     nil,
 		Symbol:            signal.Symbol,
 		Side:              string(model.SideSell),
