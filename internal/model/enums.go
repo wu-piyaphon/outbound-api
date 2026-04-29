@@ -10,9 +10,9 @@ const (
 type Status string
 
 const (
-	StatusPending  Status = "pending"  // placed locally, awaiting first broker acknowledgement
-	StatusOpen     Status = "open"     // accepted by broker, possibly partial-filled
-	StatusFilled   Status = "filled"   // fully filled (terminal)
-	StatusCanceled Status = "canceled" // canceled or expired (terminal)
-	StatusRejected Status = "rejected" // rejected (terminal)
+	StatusPending   Status = "pending"   // placed locally, awaiting first broker acknowledgement
+	StatusOpen      Status = "open"      // accepted by broker, possibly partial-filled
+	StatusFilled    Status = "filled"    // fully filled (terminal)
+	StatusCancelled Status = "cancelled" // cancelled or expired (terminal)
+	StatusRejected  Status = "rejected"  // rejected (terminal)
 )

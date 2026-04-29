@@ -15,7 +15,7 @@ func MapAlpacaEventToStatus(event string) (model.Status, bool) {
 	case "rejected", "order_canceled_rejected":
 		return model.StatusRejected, true
 	case "canceled", "expired", "done_for_day":
-		return model.StatusCanceled, true
+		return model.StatusCancelled, true
 	default:
 		// This includes pending_new, pending_cancel, pending_replace, replaced, etc.
 		return "", false

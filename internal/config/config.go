@@ -3,16 +3,21 @@ package config
 import (
 	"fmt"
 	"os"
+
+	"github.com/shopspring/decimal"
 )
 
 type Config struct {
-	AlpacaAPIKey    string
-	AlpacaAPISecret string
-	AlpacaBaseURL   string
-	SupabaseURL     string
-	SupabaseKey     string
-	DatabaseURL     string
-	Port            string
+	AlpacaAPIKey      string
+	AlpacaAPISecret   string
+	AlpacaBaseURL     string
+	SupabaseURL       string
+	SupabaseKey       string
+	DatabaseURL       string
+	Port              string
+	BotAutoStart      bool
+	RiskPerTradePct   decimal.Decimal
+	ATRRiskMultiplier decimal.Decimal
 }
 
 func Load() (*Config, error) {
@@ -24,10 +29,30 @@ func Load() (*Config, error) {
 		SupabaseKey:     os.Getenv("SUPABASE_KEY"),
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		Port:            os.Getenv("PORT"),
+		BotAutoStart:    os.Getenv("BOT_AUTOSTART") != "false",
 	}
 
 	if cfg.Port == "" {
 		cfg.Port = "8080"
+	}
+
+	riskPercentage := os.Getenv("RISK_PER_TRADE_PCT")
+	if riskPercentage == "" {
+		riskPercentage = "0.01"
+	}
+	var err error
+	cfg.RiskPerTradePct, err = decimal.NewFromString(riskPercentage)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid RISK_PER_TRADE_PCT: %w", err)
+	}
+
+	atrMultiplier := os.Getenv("ATR_RISK_MULTIPLIER")
+	if atrMultiplier == "" {
+		atrMultiplier = "2.0"
+	}
+	cfg.ATRRiskMultiplier, err = decimal.NewFromString(atrMultiplier)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid ATR_RISK_MULTIPLIER: %w", err)
 	}
 
 	if err := cfg.validate(); err != nil {

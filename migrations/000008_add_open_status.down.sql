@@ -1,0 +1,3 @@
+-- PostgreSQL does not support removing enum values once added.
+-- To revert, recreate the type without 'open' and update all dependent columns.
+-- This migration is intentionally a no-op down step.
