@@ -10,6 +10,8 @@ import (
 type TradeRepository interface {
 	Create(ctx context.Context, trade model.Trade) error
 	GetOpenBuyTradesBySymbol(ctx context.Context, symbol string) ([]*model.Trade, error)
+	GetByAlpacaOrderID(ctx context.Context, alpacaOrderID string) (*model.Trade, error)
+	Update(ctx context.Context, trade model.Trade) error
 }
 
 type tradeRepository struct {
@@ -104,4 +106,74 @@ func (t *tradeRepository) GetOpenBuyTradesBySymbol(ctx context.Context, symbol s
 	}
 
 	return trades, nil
+}
+
+const getByAlpacaOrderIDQuery = `
+	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at
+	FROM trades
+	WHERE alpaca_order_id = $1`
+
+func (t *tradeRepository) GetByAlpacaOrderID(ctx context.Context, alpacaOrderID string) (*model.Trade, error) {
+	row := GetDB(ctx, t.pool).QueryRow(ctx, getByAlpacaOrderIDQuery, alpacaOrderID)
+
+	var trade model.Trade
+	err := row.Scan(
+		&trade.ID,
+		&trade.ParentID,
+		&trade.SignalID,
+		&trade.AccountTransferID,
+		&trade.AlpacaOrderID,
+		&trade.Symbol,
+		&trade.Side,
+		&trade.Quantity,
+		&trade.PricePerUnit,
+		&trade.AvgFillPrice,
+		&trade.CommissionFee,
+		&trade.FXFeeAmortized,
+		&trade.StopLoss,
+		&trade.TakeProfit,
+		&trade.Status,
+		&trade.Metadata,
+		&trade.FilledAt,
+		&trade.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("GetByAlpacaOrderID: %w", err)
+	}
+
+	return &trade, nil
+}
+
+const updateTradeQuery = `
+	UPDATE trades
+	SET parent_id = $2, signal_id = $3, account_transfer_id = $4, alpaca_order_id = $5, symbol = $6, side = $7, quantity = $8, price_per_unit = $9, avg_fill_price = $10, commission_fee = $11, fx_fee_amortized = $12, stop_loss = $13, take_profit = $14, status = $15, metadata = $16, filled_at = $17
+	WHERE id = $1`
+
+func (t *tradeRepository) Update(ctx context.Context, trade model.Trade) error {
+	args := []any{
+		trade.ID,                // $1
+		trade.ParentID,          // $2
+		trade.SignalID,          // $3
+		trade.AccountTransferID, // $4
+		trade.AlpacaOrderID,     // $5
+		trade.Symbol,            // $6
+		trade.Side,              // $7
+		trade.Quantity,          // $8
+		trade.PricePerUnit,      // $9
+		trade.AvgFillPrice,      // $10
+		trade.CommissionFee,     // $11
+		trade.FXFeeAmortized,    // $12
+		trade.StopLoss,          // $13
+		trade.TakeProfit,        // $14
+		trade.Status,            // $15
+		trade.Metadata,          // $16
+		trade.FilledAt,          // $17
+	}
+
+	_, err := GetDB(ctx, t.pool).Exec(ctx, updateTradeQuery, args...)
+	if err != nil {
+		return fmt.Errorf("Update: %w", err)
+	}
+
+	return nil
 }

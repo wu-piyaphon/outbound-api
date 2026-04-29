@@ -16,6 +16,7 @@ type AccountTransferRepository interface {
 	Create(ctx context.Context, transfer *model.AccountTransfer) error
 	GetAvailableBudget(ctx context.Context) (*model.AccountTransfer, error)
 	DecrementRemainingTrades(ctx context.Context, transferID uuid.UUID) error
+	IncrementRemainingTrades(ctx context.Context, transferID uuid.UUID) error
 }
 
 type accountTransferRepository struct {
@@ -90,6 +91,26 @@ func (a *accountTransferRepository) DecrementRemainingTrades(ctx context.Context
 	_, err := GetDB(ctx, a.pool).Exec(ctx, decrementRemainingTradesQuery, args...)
 	if err != nil {
 		return fmt.Errorf("DecrementRemainingTrades: %w", err)
+	}
+
+	return nil
+}
+
+const incrementRemainingTradesQuery = `
+	UPDATE account_transfers
+	SET remaining_trades = remaining_trades + 1, updated_at = $2
+	WHERE id = $1
+`
+
+func (a *accountTransferRepository) IncrementRemainingTrades(ctx context.Context, transferID uuid.UUID) error {
+	args := []any{
+		transferID,
+		time.Now().UTC(),
+	}
+
+	_, err := GetDB(ctx, a.pool).Exec(ctx, incrementRemainingTradesQuery, args...)
+	if err != nil {
+		return fmt.Errorf("IncrementRemainingTrades: %w", err)
 	}
 
 	return nil

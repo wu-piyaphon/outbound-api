@@ -17,6 +17,8 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/database"
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 	"github.com/wu-piyaphon/outbound-api/internal/service"
+
+	alpacaSDK "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 )
 
 func main() {
@@ -144,7 +146,6 @@ func main() {
 	}()
 
 	const numWorkers = 5
-
 	for range numWorkers {
 		go func() {
 			for {
@@ -179,10 +180,40 @@ func main() {
 		}()
 	}
 
+	tradeUpdateChan := make(chan alpacaSDK.TradeUpdate, 64)
+	go func() {
+		if err := alpaca.StreamTradeUpdates(streamCtx, alpacaClient, tradeUpdateChan); err != nil {
+			log.Printf("trade updates stream stopped: %v", err)
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case update := <-tradeUpdateChan:
+				status, ok := alpaca.MapAlpacaEventToStatus(update.Event)
+				if !ok {
+					log.Printf("unknown alpaca event: %s", update.Event)
+					continue
+				}
+				if err := tradeService.ApplyTradeUpdates(streamCtx, update, status); err != nil {
+					log.Printf("failed to handle trade update: %v", err)
+				}
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	go http.ListenAndServe(":8080", nil)
+	go func() {
+		if err := http.ListenAndServe(":8080", nil); err != nil && err != http.ErrServerClosed {
+
+			log.Printf("failed to start HTTP server: %v", err)
+		}
+	}()
 
 	<-quit
 	log.Println("shutting down...")
