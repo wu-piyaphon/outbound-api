@@ -14,6 +14,8 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 )
 
+var decimalZero = decimal.NewFromInt(0)
+
 type TradeService interface {
 	ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error)
 	ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error)
@@ -27,13 +29,35 @@ type tradeService struct {
 	signalRepository          repository.SignalRepository
 	transactor                repository.Transactor
 	alpacaClient              *alpaca.Client
+	riskPerTradePct           decimal.Decimal
+	atrRiskMultiplier         decimal.Decimal
 }
 
-func NewTradeService(tradeRepository repository.TradeRepository, accountTransferRepository repository.AccountTransferRepository, signalRepository repository.SignalRepository, transactor repository.Transactor, alpacaClient *alpaca.Client) TradeService {
-	return &tradeService{tradeRepository: tradeRepository, accountTransferRepository: accountTransferRepository, signalRepository: signalRepository, transactor: transactor, alpacaClient: alpacaClient}
+func NewTradeService(
+	tradeRepository repository.TradeRepository,
+	accountTransferRepository repository.AccountTransferRepository,
+	signalRepository repository.SignalRepository,
+	transactor repository.Transactor,
+	alpacaClient *alpaca.Client,
+	riskPerTradePct decimal.Decimal,
+	atrRiskMultiplier decimal.Decimal,
+) TradeService {
+	return &tradeService{
+		tradeRepository:           tradeRepository,
+		accountTransferRepository: accountTransferRepository,
+		signalRepository:          signalRepository,
+		transactor:                transactor,
+		alpacaClient:              alpacaClient,
+		riskPerTradePct:           riskPerTradePct,
+		atrRiskMultiplier:         atrRiskMultiplier,
+	}
 }
 
 func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error) {
+	if trade.AccountTransferID == nil {
+		return nil, fmt.Errorf("ExecuteSellTrade: parent trade %s has nil account_transfer_id", trade.ID)
+	}
+
 	sellTrade := &model.Trade{
 		ID:                uuid.New(),
 		ParentID:          &trade.ID,
@@ -83,14 +107,32 @@ func isUniqueConstraintError(err error) bool {
 }
 
 func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error) {
+	if account == nil {
+		return nil, fmt.Errorf("ExecuteBuyTrade: account is nil")
+	}
 	if account.RemainingTrades == nil || *account.RemainingTrades <= 0 {
 		return nil, nil
 	}
 
-	limitPerTrade := account.AmountUSD.Div(decimal.NewFromInt(int64(account.TargetTrades)))
-	quantity := limitPerTrade.Div(signal.PriceAtSignal)
+	riskAmount := account.AmountUSD.Mul(t.riskPerTradePct)
 
-	if quantity.LessThanOrEqual(decimal.NewFromFloat(0)) {
+	atrStopDistance := signal.Indicators.ATR.Mul(t.atrRiskMultiplier)
+
+	var quantity decimal.Decimal
+	if !atrStopDistance.IsZero() && signal.PriceAtSignal.GreaterThan(decimalZero) {
+		quantity = riskAmount.Div(atrStopDistance)
+
+		maxPerTrade := account.AmountUSD.Div(decimal.NewFromInt(int64(account.TargetTrades)))
+		maxQuantity := maxPerTrade.Div(signal.PriceAtSignal)
+		if quantity.GreaterThan(maxQuantity) {
+			quantity = maxQuantity
+		}
+	} else {
+		limitPerTrade := account.AmountUSD.Div(decimal.NewFromInt(int64(account.TargetTrades)))
+		quantity = limitPerTrade.Div(signal.PriceAtSignal)
+	}
+
+	if quantity.LessThanOrEqual(decimalZero) {
 		return nil, nil
 	}
 
@@ -126,9 +168,14 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		StopLoss:          &stopLoss,
 		TakeProfit:        &takeProfit,
 		Status:            model.StatusPending,
-		Metadata:          nil,
-		FilledAt:          nil,
-		CreatedAt:         signal.CreatedAt,
+		Metadata: map[string]any{
+			"risk_amount":         riskAmount.String(),
+			"atr_stop_distance":   atrStopDistance.String(),
+			"risk_per_trade_pct":  t.riskPerTradePct.String(),
+			"atr_risk_multiplier": t.atrRiskMultiplier.String(),
+		},
+		FilledAt:  nil,
+		CreatedAt: signal.CreatedAt,
 	}
 
 	err = t.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
@@ -220,7 +267,7 @@ func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.Trad
 
 	if trade.Status == model.StatusFilled ||
 		trade.Status == model.StatusRejected ||
-		trade.Status == model.StatusCanceled {
+		trade.Status == model.StatusCancelled {
 		return nil // already terminal, ignore replay
 	}
 
@@ -241,7 +288,7 @@ func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.Trad
 			return fmt.Errorf("ApplyTradeUpdates: %w", err)
 		}
 
-		if updateStatus == model.StatusRejected || updateStatus == model.StatusCanceled {
+		if updateStatus == model.StatusRejected || updateStatus == model.StatusCancelled {
 			if trade.Side == string(model.SideBuy) && trade.AccountTransferID != nil {
 				err = t.accountTransferRepository.IncrementRemainingTrades(txCtx, *trade.AccountTransferID)
 				if err != nil {

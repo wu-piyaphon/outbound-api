@@ -12,6 +12,7 @@ type TradeRepository interface {
 	GetOpenBuyTradesBySymbol(ctx context.Context, symbol string) ([]*model.Trade, error)
 	GetByAlpacaOrderID(ctx context.Context, alpacaOrderID string) (*model.Trade, error)
 	Update(ctx context.Context, trade model.Trade) error
+	HasOpenPosition(ctx context.Context, symbol string) (bool, error)
 }
 
 type tradeRepository struct {
@@ -142,6 +143,27 @@ func (t *tradeRepository) GetByAlpacaOrderID(ctx context.Context, alpacaOrderID 
 	}
 
 	return &trade, nil
+}
+
+const hasOpenPositionQuery = `
+	SELECT EXISTS (
+		SELECT 1 FROM trades
+		WHERE symbol = $1
+		AND side = $2
+		AND status = $3
+		AND NOT EXISTS (
+			SELECT 1 FROM trades sell
+			WHERE sell.side = $4 AND sell.parent_id = trades.id
+		)
+	)`
+
+func (t *tradeRepository) HasOpenPosition(ctx context.Context, symbol string) (bool, error) {
+	var exists bool
+	err := GetDB(ctx, t.pool).QueryRow(ctx, hasOpenPositionQuery, symbol, model.SideBuy, model.StatusFilled, model.SideSell).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("HasOpenPosition: %w", err)
+	}
+	return exists, nil
 }
 
 const updateTradeQuery = `
