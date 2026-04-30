@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"github.com/wu-piyaphon/outbound-api/internal/indicator"
@@ -17,26 +16,26 @@ import (
 type SignalService interface {
 	GetAllSignals(ctx context.Context) ([]model.Signal, error)
 	CreateSellSignal(ctx context.Context, symbol string, priceAtSignal decimal.Decimal, reasoning string) (*model.Signal, error)
-	EvaluateBuySignal(ctx context.Context, symbol string) (*model.Signal, error)
+	EvaluateBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error)
 }
 
 type signalService struct {
 	signalRepo        repository.SignalRepository
 	tradeRepo         repository.TradeRepository
-	marketData        *marketdata.Client
+	indicators        indicator.IndicatorReader
 	sentimentProvider sentiment.Provider
 }
 
 func NewSignalService(
 	signalRepo repository.SignalRepository,
 	tradeRepo repository.TradeRepository,
-	marketData *marketdata.Client,
+	indicators indicator.IndicatorReader,
 	sentimentProvider sentiment.Provider,
 ) SignalService {
 	return &signalService{
 		signalRepo:        signalRepo,
 		tradeRepo:         tradeRepo,
-		marketData:        marketData,
+		indicators:        indicators,
 		sentimentProvider: sentimentProvider,
 	}
 }
@@ -69,7 +68,7 @@ func (s *signalService) CreateSellSignal(ctx context.Context, symbol string, pri
 	return signal, nil
 }
 
-func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string) (*model.Signal, error) {
+func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error) {
 	hasPosition, err := s.tradeRepo.HasOpenPosition(ctx, symbol)
 	if err != nil {
 		return nil, fmt.Errorf("EvaluateBuySignal: checking open position: %w", err)
@@ -78,47 +77,20 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string) (*
 		return nil, nil
 	}
 
-	bars, err := s.marketData.GetBars(symbol, marketdata.GetBarsRequest{
-		TimeFrame: marketdata.OneDay,
-		Start:     time.Now().AddDate(-1, -2, 0),
-		End:       time.Now(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("GetBars: %w", err)
+	// Read pre-computed daily indicators from cache — zero network I/O.
+	state, ready := s.indicators.Get(symbol)
+	if !ready {
+		// Symbol not yet seeded; skip until next daily warm.
+		return nil, nil
 	}
 
-	prices := make([]decimal.Decimal, len(bars))
-	convertedBars := make([]indicator.Bar, len(bars))
-
-	for i, bar := range bars {
-		prices[i] = decimal.NewFromFloat(bar.Close)
-		convertedBars[i] = indicator.Bar{
-			High:  decimal.NewFromFloat(bar.High),
-			Low:   decimal.NewFromFloat(bar.Low),
-			Close: decimal.NewFromFloat(bar.Close),
-		}
-	}
-
-	// Layer 1: Trend — price must be above EMA 200.
-	ema, err := indicator.CalculateEMA(prices, 200)
-	if err != nil {
-		return nil, fmt.Errorf("CalculateEMA: %w", err)
+	// Layer 1: Trend — live price must be above EMA(200).
+	if !currentPrice.GreaterThan(state.EMA) {
+		return nil, nil
 	}
 
 	// Layer 2: Momentum — RSI(14) must be below 35 (oversold).
-	rsi, err := indicator.CalculateRSI(prices, 14)
-	if err != nil {
-		return nil, fmt.Errorf("CalculateRSI: %w", err)
-	}
-
-	atr, err := indicator.CalculateATR(convertedBars, 14)
-	if err != nil {
-		return nil, fmt.Errorf("CalculateATR: %w", err)
-	}
-
-	currentPrice := prices[len(prices)-1]
-
-	if !currentPrice.GreaterThan(ema) || !rsi.LessThan(decimal.NewFromInt(35)) {
+	if !state.RSI.LessThan(decimal.NewFromInt(35)) {
 		return nil, nil
 	}
 
@@ -133,7 +105,7 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string) (*
 
 	reasoning := fmt.Sprintf(
 		"Trend+Momentum+Sentiment confirmed. Price: %v, EMA200: %v, RSI14: %v, ATR14: %v. Sentiment: %s",
-		currentPrice, ema, rsi, atr, sentimentResult.Reasoning,
+		currentPrice, state.EMA, state.RSI, state.ATR, sentimentResult.Reasoning,
 	)
 
 	signal := &model.Signal{
@@ -141,7 +113,7 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string) (*
 		Symbol:        symbol,
 		Side:          model.SideBuy,
 		PriceAtSignal: currentPrice,
-		Indicators:    model.SignalIndicators{EMA: ema, RSI: rsi, ATR: atr},
+		Indicators:    model.SignalIndicators{EMA: state.EMA, RSI: state.RSI, ATR: state.ATR},
 		IsExecuted:    false,
 		Reasoning:     &reasoning,
 		CreatedAt:     time.Now().UTC(),
