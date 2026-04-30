@@ -45,25 +45,28 @@ func (c *Controller) IsActive() bool {
 }
 
 func (c *Controller) Start() error {
-	if c.State() == StateRunning {
-		return fmt.Errorf("bot is already running")
+	if atomic.CompareAndSwapInt32(&c.state, int32(StatePaused), int32(StateRunning)) {
+		return nil
 	}
-	atomic.StoreInt32(&c.state, int32(StateRunning))
-	return nil
+	if atomic.CompareAndSwapInt32(&c.state, int32(StateStopped), int32(StateRunning)) {
+		return nil
+	}
+	return fmt.Errorf("bot is already running")
 }
 
 func (c *Controller) Pause() error {
-	if c.State() != StateRunning {
-		return fmt.Errorf("bot must be running to pause; current state: %s", c.State())
+	if atomic.CompareAndSwapInt32(&c.state, int32(StateRunning), int32(StatePaused)) {
+		return nil
 	}
-	atomic.StoreInt32(&c.state, int32(StatePaused))
-	return nil
+	return fmt.Errorf("bot must be running to pause; current state: %s", c.State())
 }
 
 func (c *Controller) Stop() error {
-	if c.State() == StateStopped {
-		return fmt.Errorf("bot is already stopped")
+	if atomic.CompareAndSwapInt32(&c.state, int32(StateRunning), int32(StateStopped)) {
+		return nil
 	}
-	atomic.StoreInt32(&c.state, int32(StateStopped))
-	return nil
+	if atomic.CompareAndSwapInt32(&c.state, int32(StatePaused), int32(StateStopped)) {
+		return nil
+	}
+	return fmt.Errorf("bot is already stopped")
 }

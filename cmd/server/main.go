@@ -105,7 +105,7 @@ func main() {
 	sentimentProvider := sentiment.NewAlpacaNewsProvider(marketDataClient)
 
 	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, sentimentProvider)
-	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier)
+	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
 	initialBotState := bot.StateRunning
@@ -244,14 +244,13 @@ func main() {
 						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
 					}
 
-					availableBudget, err := accountTransferService.GetAvailableBudget(streamCtx)
-					if err != nil || availableBudget == nil {
-						log.Printf("failed to get active account transfer: %v", err)
-						continue
-					}
-
 					if entrySignal != nil {
-						_, err := tradeService.ExecuteBuyTrade(streamCtx, entrySignal, availableBudget)
+						availableBudget, err := accountTransferService.GetAvailableBudget(streamCtx)
+						if err != nil || availableBudget == nil {
+							log.Printf("failed to get active account transfer: %v", err)
+							continue
+						}
+						_, err = tradeService.ExecuteBuyTrade(streamCtx, entrySignal, availableBudget)
 						if err != nil {
 							log.Printf("failed to execute buy trade for %s: %v", entrySignal.Symbol, err)
 						}

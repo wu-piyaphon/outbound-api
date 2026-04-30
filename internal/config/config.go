@@ -8,16 +8,28 @@ import (
 )
 
 type Config struct {
-	AlpacaAPIKey      string
-	AlpacaAPISecret   string
-	AlpacaBaseURL     string
-	SupabaseURL       string
-	SupabaseKey       string
-	DatabaseURL       string
-	Port              string
-	BotAutoStart      bool
-	RiskPerTradePct   decimal.Decimal
+	AlpacaAPIKey    string
+	AlpacaAPISecret string
+	AlpacaBaseURL   string
+	SupabaseURL     string
+	SupabaseKey     string
+	DatabaseURL     string
+	Port            string
+	BotAutoStart    bool
+
+	// RiskPerTradePct is the fraction of available budget risked per trade.
+	// Default: 0.01 (1%). Set via RISK_PER_TRADE_PCT env var.
+	RiskPerTradePct decimal.Decimal
+
+	// ATRRiskMultiplier drives both position sizing and stop-loss placement so
+	// the two remain consistent: stopDistance = ATR × ATRRiskMultiplier.
+	// Default: 2.0. Set via ATR_RISK_MULTIPLIER env var.
 	ATRRiskMultiplier decimal.Decimal
+
+	// TakeProfitMultiplier is the ATR multiplier for the take-profit level:
+	// takeProfit = entryPrice + ATR × TakeProfitMultiplier.
+	// Default: 3.0. Set via TAKE_PROFIT_MULTIPLIER env var.
+	TakeProfitMultiplier decimal.Decimal
 }
 
 func Load() (*Config, error) {
@@ -36,11 +48,12 @@ func Load() (*Config, error) {
 		cfg.Port = "8080"
 	}
 
+	var err error
+
 	riskPercentage := os.Getenv("RISK_PER_TRADE_PCT")
 	if riskPercentage == "" {
 		riskPercentage = "0.01"
 	}
-	var err error
 	cfg.RiskPerTradePct, err = decimal.NewFromString(riskPercentage)
 	if err != nil {
 		return nil, fmt.Errorf("config: invalid RISK_PER_TRADE_PCT: %w", err)
@@ -53,6 +66,15 @@ func Load() (*Config, error) {
 	cfg.ATRRiskMultiplier, err = decimal.NewFromString(atrMultiplier)
 	if err != nil {
 		return nil, fmt.Errorf("config: invalid ATR_RISK_MULTIPLIER: %w", err)
+	}
+
+	takeProfitMultiplier := os.Getenv("TAKE_PROFIT_MULTIPLIER")
+	if takeProfitMultiplier == "" {
+		takeProfitMultiplier = "3.0"
+	}
+	cfg.TakeProfitMultiplier, err = decimal.NewFromString(takeProfitMultiplier)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid TAKE_PROFIT_MULTIPLIER: %w", err)
 	}
 
 	if err := cfg.validate(); err != nil {
