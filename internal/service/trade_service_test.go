@@ -78,9 +78,6 @@ type mockSignalRepo struct{}
 
 func (m *mockSignalRepo) GetAll(_ context.Context) ([]model.Signal, error) { return nil, nil }
 func (m *mockSignalRepo) Create(_ context.Context, _ *model.Signal) error  { return nil }
-func (m *mockSignalRepo) GetByID(_ context.Context, _ uuid.UUID) (*model.Signal, error) {
-	return nil, nil
-}
 
 type mockTransactor struct{}
 
