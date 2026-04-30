@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/joho/godotenv"
 	"github.com/shopspring/decimal"
@@ -17,12 +18,43 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/config"
 	"github.com/wu-piyaphon/outbound-api/internal/database"
 	bothttp "github.com/wu-piyaphon/outbound-api/internal/http"
+	"github.com/wu-piyaphon/outbound-api/internal/indicator"
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 	"github.com/wu-piyaphon/outbound-api/internal/sentiment"
 	"github.com/wu-piyaphon/outbound-api/internal/service"
 
 	alpacaSDK "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 )
+
+// seedIndicators fetches 14 months of daily bars for symbol and seeds the
+// indicator cache. Runs at startup and once per day per symbol.
+func seedIndicators(symbol string, client *marketdata.Client, cache *indicator.IndicatorCache) {
+	bars, err := client.GetBars(symbol, marketdata.GetBarsRequest{
+		TimeFrame: marketdata.OneDay,
+		Start:     time.Now().AddDate(-1, -2, 0),
+		End:       time.Now(),
+	})
+	if err != nil {
+		log.Printf("seedIndicators: GetBars for %s: %v", symbol, err)
+		return
+	}
+
+	ibars := make([]indicator.Bar, len(bars))
+	for i, b := range bars {
+		ibars[i] = indicator.Bar{
+			High:  decimal.NewFromFloat(b.High),
+			Low:   decimal.NewFromFloat(b.Low),
+			Close: decimal.NewFromFloat(b.Close),
+		}
+	}
+
+	if err := cache.Seed(symbol, ibars, 200, 14, 14); err != nil {
+		log.Printf("seedIndicators: Seed for %s: %v", symbol, err)
+		return
+	}
+
+	log.Printf("seedIndicators: %s ready", symbol)
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -64,9 +96,15 @@ func main() {
 	marketDataClient := alpaca.NewMarketDataClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret)
 	alpacaClient := alpaca.NewAlpacaClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, cfg.AlpacaBaseURL)
 
+	// Seed indicator cache once per symbol at startup — zero REST calls in hot path.
+	indicatorCache := indicator.NewIndicatorCache()
+	for _, symbol := range watchlists {
+		seedIndicators(symbol, marketDataClient, indicatorCache)
+	}
+
 	sentimentProvider := sentiment.NewAlpacaNewsProvider(marketDataClient)
 
-	signalService := service.NewSignalService(signalRepo, tradeRepo, marketDataClient, sentimentProvider)
+	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, sentimentProvider)
 	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
@@ -89,6 +127,8 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
+	// Watchlist refresh: checks for symbol additions/removals every 30 seconds
+	// and seeds the indicator cache for any newly added symbols.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -112,45 +152,70 @@ func main() {
 					currentSet[s] = struct{}{}
 				}
 
-				newSubscribedSymbols := []string{}
-				unsubscribedSymbols := []string{}
+				var newSymbols, removedSymbols []string
 
 				for s := range currentSet {
 					if _, exist := subscribed[s]; !exist {
-						newSubscribedSymbols = append(newSubscribedSymbols, s)
+						newSymbols = append(newSymbols, s)
 					}
 				}
 
 				for s := range subscribed {
 					if _, exist := currentSet[s]; !exist {
-						unsubscribedSymbols = append(unsubscribedSymbols, s)
+						removedSymbols = append(removedSymbols, s)
 					}
 				}
 
-				if len(newSubscribedSymbols) > 0 {
-					err = alpaca.SubscribeToBars(streamClient, barChan, newSubscribedSymbols...)
+				if len(newSymbols) > 0 {
+					err = alpaca.SubscribeToBars(streamClient, barChan, newSymbols...)
 					if err != nil {
 						log.Printf("failed to subscribe to new symbols: %v", err)
 					} else {
-						log.Printf("subscribed to new symbols: %v", newSubscribedSymbols)
-						for _, s := range newSubscribedSymbols {
+						log.Printf("subscribed to new symbols: %v", newSymbols)
+						for _, s := range newSymbols {
 							subscribed[s] = struct{}{}
+							// Seed indicators for the new symbol before bars arrive.
+							seedIndicators(s, marketDataClient, indicatorCache)
 						}
 					}
 				}
 
-				if len(unsubscribedSymbols) > 0 {
-					err = alpaca.UnsubscribeFromBars(streamClient, unsubscribedSymbols...)
+				if len(removedSymbols) > 0 {
+					err = alpaca.UnsubscribeFromBars(streamClient, removedSymbols...)
 					if err != nil {
 						log.Printf("failed to unsubscribe from symbols: %v", err)
 					} else {
-						log.Printf("unsubscribed from symbols: %v", unsubscribedSymbols)
-						for _, s := range unsubscribedSymbols {
+						log.Printf("unsubscribed from symbols: %v", removedSymbols)
+						for _, s := range removedSymbols {
 							delete(subscribed, s)
 						}
 					}
 				}
 
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
+
+	// Daily re-seed: refresh indicators once every 24 hours so that the EMA,
+	// RSI, and ATR values incorporate each new day's bar without restarting.
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				log.Println("daily indicator re-seed starting")
+				watchlists, err := watchlistService.GetAllActive(streamCtx)
+				if err != nil {
+					log.Printf("daily re-seed: failed to get watchlists: %v", err)
+					continue
+				}
+				for _, s := range watchlists {
+					seedIndicators(s, marketDataClient, indicatorCache)
+				}
+				log.Println("daily indicator re-seed complete")
 			case <-streamCtx.Done():
 				return
 			}
@@ -167,12 +232,14 @@ func main() {
 						continue
 					}
 
-					err := tradeService.EvaluateAndExecuteExits(streamCtx, bar.Symbol, decimal.NewFromFloat(bar.Close))
+					livePrice := decimal.NewFromFloat(bar.Close)
+
+					err := tradeService.EvaluateAndExecuteExits(streamCtx, bar.Symbol, livePrice)
 					if err != nil {
 						log.Printf("failed to check exit conditions for %s: %v", bar.Symbol, err)
 					}
 
-					entrySignal, err := signalService.EvaluateBuySignal(streamCtx, bar.Symbol)
+					entrySignal, err := signalService.EvaluateBuySignal(streamCtx, bar.Symbol, livePrice)
 					if err != nil {
 						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
 					}
