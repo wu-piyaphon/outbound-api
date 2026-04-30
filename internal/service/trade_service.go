@@ -14,7 +14,11 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 )
 
-var decimalZero = decimal.NewFromInt(0)
+// OrderPlacer is the broker integration point for submitting market orders.
+// *alpaca.Client from the Alpaca SDK satisfies this interface.
+type OrderPlacer interface {
+	PlaceOrder(req alpaca.PlaceOrderRequest) (*alpaca.Order, error)
+}
 
 type TradeService interface {
 	ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error)
@@ -28,9 +32,10 @@ type tradeService struct {
 	accountTransferRepository repository.AccountTransferRepository
 	signalRepository          repository.SignalRepository
 	transactor                repository.Transactor
-	alpacaClient              *alpaca.Client
+	orderPlacer               OrderPlacer
 	riskPerTradePct           decimal.Decimal
 	atrRiskMultiplier         decimal.Decimal
+	takeProfitMultiplier      decimal.Decimal
 }
 
 func NewTradeService(
@@ -38,18 +43,20 @@ func NewTradeService(
 	accountTransferRepository repository.AccountTransferRepository,
 	signalRepository repository.SignalRepository,
 	transactor repository.Transactor,
-	alpacaClient *alpaca.Client,
+	orderPlacer OrderPlacer,
 	riskPerTradePct decimal.Decimal,
 	atrRiskMultiplier decimal.Decimal,
+	takeProfitMultiplier decimal.Decimal,
 ) TradeService {
 	return &tradeService{
 		tradeRepository:           tradeRepository,
 		accountTransferRepository: accountTransferRepository,
 		signalRepository:          signalRepository,
 		transactor:                transactor,
-		alpacaClient:              alpacaClient,
+		orderPlacer:               orderPlacer,
 		riskPerTradePct:           riskPerTradePct,
 		atrRiskMultiplier:         atrRiskMultiplier,
+		takeProfitMultiplier:      takeProfitMultiplier,
 	}
 }
 
@@ -63,34 +70,25 @@ func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signa
 		ParentID:          &trade.ID,
 		SignalID:          &signal.ID,
 		AccountTransferID: trade.AccountTransferID,
-		AlpacaOrderID:     nil,
 		Symbol:            signal.Symbol,
 		Side:              string(model.SideSell),
 		Quantity:          trade.Quantity,
 		PricePerUnit:      &signal.PriceAtSignal,
-		AvgFillPrice:      nil,
-		CommissionFee:     nil,
-		FXFeeAmortized:    nil,
 		Status:            model.StatusPending,
-		Metadata:          nil,
-		FilledAt:          nil,
 		CreatedAt:         signal.CreatedAt,
 	}
 
-	alpacaOrder := alpaca.PlaceOrderRequest{
+	placedOrder, err := t.orderPlacer.PlaceOrder(alpaca.PlaceOrderRequest{
 		Symbol:      signal.Symbol,
 		Qty:         &sellTrade.Quantity,
 		Side:        alpaca.Sell,
 		Type:        alpaca.Market,
 		TimeInForce: alpaca.Day,
-	}
-
-	placedOrder, err := t.alpacaClient.PlaceOrder(alpacaOrder)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("ExecuteSellTrade: %w", err)
 	}
 
-	sellTrade.Status = model.StatusPending
 	sellTrade.AlpacaOrderID = &placedOrder.ID
 
 	err = t.tradeRepository.Create(ctx, *sellTrade)
@@ -114,47 +112,53 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		return nil, nil
 	}
 
+	// Layer 4: Dynamic risk-based position sizing.
+	// Risk amount = available budget × risk percentage per trade.
 	riskAmount := account.AmountUSD.Mul(t.riskPerTradePct)
 
+	// Stop distance = ATR × ATRRiskMultiplier.
+	// This matches the actual stop-loss placement below so risk is consistent.
 	atrStopDistance := signal.Indicators.ATR.Mul(t.atrRiskMultiplier)
 
 	var quantity decimal.Decimal
-	if !atrStopDistance.IsZero() && signal.PriceAtSignal.GreaterThan(decimalZero) {
+	if !atrStopDistance.IsZero() && signal.PriceAtSignal.GreaterThan(decimal.Zero) {
+		// Shares at risk = risk amount / $ stop distance per share.
 		quantity = riskAmount.Div(atrStopDistance)
 
+		// Cap at the per-slot maximum to respect transfer constraints.
 		maxPerTrade := account.AmountUSD.Div(decimal.NewFromInt(int64(account.TargetTrades)))
 		maxQuantity := maxPerTrade.Div(signal.PriceAtSignal)
 		if quantity.GreaterThan(maxQuantity) {
 			quantity = maxQuantity
 		}
 	} else {
+		// Fallback: equal-weight sizing when ATR is unavailable.
 		limitPerTrade := account.AmountUSD.Div(decimal.NewFromInt(int64(account.TargetTrades)))
 		quantity = limitPerTrade.Div(signal.PriceAtSignal)
 	}
 
-	if quantity.LessThanOrEqual(decimalZero) {
+	if quantity.LessThanOrEqual(decimal.Zero) {
 		return nil, nil
 	}
 
-	alpacaOrder := alpaca.PlaceOrderRequest{
+	placedOrder, err := t.orderPlacer.PlaceOrder(alpaca.PlaceOrderRequest{
 		Symbol:      signal.Symbol,
 		Qty:         &quantity,
 		Side:        alpaca.Buy,
 		Type:        alpaca.Market,
 		TimeInForce: alpaca.Day,
-	}
-
-	placedOrder, err := t.alpacaClient.PlaceOrder(alpacaOrder)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("ExecuteBuyTrade: %w", err)
 	}
 
-	stopLoss := signal.PriceAtSignal.Sub(signal.Indicators.ATR.Mul(decimal.NewFromFloat(2)))
-	takeProfit := signal.PriceAtSignal.Add(signal.Indicators.ATR.Mul(decimal.NewFromFloat(3)))
+	// Stop-loss and take-profit use the same ATR multipliers as the sizing
+	// calculation to keep risk assumptions internally consistent.
+	stopLoss := signal.PriceAtSignal.Sub(signal.Indicators.ATR.Mul(t.atrRiskMultiplier))
+	takeProfit := signal.PriceAtSignal.Add(signal.Indicators.ATR.Mul(t.takeProfitMultiplier))
 
 	trade := &model.Trade{
 		ID:                uuid.New(),
-		ParentID:          nil,
 		SignalID:          &signal.ID,
 		AccountTransferID: &account.ID,
 		AlpacaOrderID:     &placedOrder.ID,
@@ -162,35 +166,24 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		Side:              string(model.SideBuy),
 		Quantity:          quantity,
 		PricePerUnit:      &signal.PriceAtSignal,
-		AvgFillPrice:      nil,
-		CommissionFee:     nil,
-		FXFeeAmortized:    nil,
 		StopLoss:          &stopLoss,
 		TakeProfit:        &takeProfit,
 		Status:            model.StatusPending,
 		Metadata: map[string]any{
-			"risk_amount":         riskAmount.String(),
-			"atr_stop_distance":   atrStopDistance.String(),
-			"risk_per_trade_pct":  t.riskPerTradePct.String(),
-			"atr_risk_multiplier": t.atrRiskMultiplier.String(),
+			"risk_amount":           riskAmount.String(),
+			"atr_stop_distance":     atrStopDistance.String(),
+			"risk_per_trade_pct":    t.riskPerTradePct.String(),
+			"atr_risk_multiplier":   t.atrRiskMultiplier.String(),
+			"take_profit_multiplier": t.takeProfitMultiplier.String(),
 		},
-		FilledAt:  nil,
 		CreatedAt: signal.CreatedAt,
 	}
 
 	err = t.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
-		err := t.tradeRepository.Create(txCtx, *trade)
-		if err != nil {
+		if err := t.tradeRepository.Create(txCtx, *trade); err != nil {
 			return err
 		}
-
-		err = t.accountTransferRepository.DecrementRemainingTrades(txCtx, *trade.AccountTransferID)
-		if err != nil {
-			return err
-		}
-
-		return nil
-
+		return t.accountTransferRepository.DecrementRemainingTrades(txCtx, *trade.AccountTransferID)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ExecuteBuyTrade: %w", err)
@@ -206,43 +199,35 @@ func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol strin
 			return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
 		}
 
-		var exitSignals []*model.ExitSignal
 		for _, trade := range openTrades {
-			if trade.StopLoss != nil && currentPrice.LessThanOrEqual(*trade.StopLoss) {
-				exitSignals = append(exitSignals, &model.ExitSignal{
-					Trade:  trade,
-					Reason: "stop_loss",
-				})
-			} else if trade.TakeProfit != nil && currentPrice.GreaterThanOrEqual(*trade.TakeProfit) {
-				exitSignals = append(exitSignals, &model.ExitSignal{
-					Trade:  trade,
-					Reason: "take_profit",
-				})
+			var reason string
+			switch {
+			case trade.StopLoss != nil && currentPrice.LessThanOrEqual(*trade.StopLoss):
+				reason = "stop_loss"
+			case trade.TakeProfit != nil && currentPrice.GreaterThanOrEqual(*trade.TakeProfit):
+				reason = "take_profit"
+			default:
+				continue
 			}
-		}
 
-		for _, signal := range exitSignals {
 			sellSignal := &model.Signal{
 				ID:            uuid.New(),
-				Reasoning:     &signal.Reason,
-				Symbol:        signal.Trade.Symbol,
+				Reasoning:     &reason,
+				Symbol:        trade.Symbol,
 				Side:          model.SideSell,
 				PriceAtSignal: currentPrice,
 				IsExecuted:    false,
 				CreatedAt:     time.Now().UTC(),
 			}
 
-			err := t.signalRepository.Create(txCtx, sellSignal)
-			if err != nil {
+			if err := t.signalRepository.Create(txCtx, sellSignal); err != nil {
 				return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
 			}
 
-			_, err = t.ExecuteSellTrade(txCtx, sellSignal, signal.Trade)
-			if err != nil {
+			if _, err := t.ExecuteSellTrade(txCtx, sellSignal, trade); err != nil {
 				if isUniqueConstraintError(err) {
 					continue
 				}
-
 				return fmt.Errorf("EvaluateAndExecuteExits: %w", err)
 			}
 		}
@@ -262,7 +247,7 @@ func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.Trad
 		return fmt.Errorf("ApplyTradeUpdates: %w", err)
 	}
 	if trade == nil {
-		return fmt.Errorf("ApplyTradeUpdates: trade not found")
+		return fmt.Errorf("ApplyTradeUpdates: trade not found for order %s", update.Order.ID)
 	}
 
 	if trade.Status == model.StatusFilled ||
@@ -283,15 +268,13 @@ func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.Trad
 			trade.FXFeeAmortized = &fxFeeAmortized
 		}
 
-		err = t.tradeRepository.Update(txCtx, *trade)
-		if err != nil {
+		if err := t.tradeRepository.Update(txCtx, *trade); err != nil {
 			return fmt.Errorf("ApplyTradeUpdates: %w", err)
 		}
 
 		if updateStatus == model.StatusRejected || updateStatus == model.StatusCancelled {
 			if trade.Side == string(model.SideBuy) && trade.AccountTransferID != nil {
-				err = t.accountTransferRepository.IncrementRemainingTrades(txCtx, *trade.AccountTransferID)
-				if err != nil {
+				if err := t.accountTransferRepository.IncrementRemainingTrades(txCtx, *trade.AccountTransferID); err != nil {
 					return fmt.Errorf("ApplyTradeUpdates: %w", err)
 				}
 			}

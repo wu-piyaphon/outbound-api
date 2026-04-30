@@ -12,6 +12,10 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 )
 
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
 type mockTradeRepo struct {
 	created       []model.Trade
 	updated       []model.Trade
@@ -85,17 +89,45 @@ func (m *mockTransactor) WithinTransaction(ctx context.Context, fn func(context.
 	return fn(ctx)
 }
 
+// mockOrderPlacer records every PlaceOrder call so tests can assert on them.
+type mockOrderPlacer struct {
+	placedOrders []alpaca.PlaceOrderRequest
+	returnErr    error
+}
+
+func (m *mockOrderPlacer) PlaceOrder(req alpaca.PlaceOrderRequest) (*alpaca.Order, error) {
+	if m.returnErr != nil {
+		return nil, m.returnErr
+	}
+	m.placedOrders = append(m.placedOrders, req)
+	id := uuid.New().String()
+	return &alpaca.Order{ID: id}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 func newTestTradeService(tradeRepo repository.TradeRepository, atRepo repository.AccountTransferRepository) TradeService {
+	return newTestTradeServiceWith(tradeRepo, atRepo, &mockOrderPlacer{})
+}
+
+func newTestTradeServiceWith(tradeRepo repository.TradeRepository, atRepo repository.AccountTransferRepository, placer OrderPlacer) TradeService {
 	return NewTradeService(
 		tradeRepo,
 		atRepo,
 		&mockSignalRepo{},
 		&mockTransactor{},
-		nil,
-		decimal.NewFromFloat(0.01),
-		decimal.NewFromFloat(2.0),
+		placer,
+		decimal.NewFromFloat(0.01),  // riskPerTradePct
+		decimal.NewFromFloat(2.0),   // atrRiskMultiplier
+		decimal.NewFromFloat(3.0),   // takeProfitMultiplier
 	)
 }
+
+// ---------------------------------------------------------------------------
+// Guard / validation tests
+// ---------------------------------------------------------------------------
 
 func TestExecuteBuyTrade_NilAccount(t *testing.T) {
 	svc := newTestTradeService(&mockTradeRepo{}, &mockAccountTransferRepo{})
@@ -144,7 +176,7 @@ func TestExecuteSellTrade_NilAccountTransferID(t *testing.T) {
 
 	parentTrade := &model.Trade{
 		ID:                uuid.New(),
-		AccountTransferID: nil, // nil — should be rejected
+		AccountTransferID: nil,
 		Symbol:            "AAPL",
 		Quantity:          decimal.NewFromFloat(10),
 	}
@@ -161,60 +193,100 @@ func TestExecuteSellTrade_NilAccountTransferID(t *testing.T) {
 	}
 }
 
-func TestDynamicPositionSizing_ATRBasedQuantity(t *testing.T) {
-	// With ATR=4, multiplier=2.0, stop distance = 8
-	// With budget=1000 and riskPct=0.01, riskAmount=10
-	// Expected: qty = 10 / 8 = 1.25
-	// Max per slot = 1000 / 5 / 150 = 1.333...
-	// So ATR qty (1.25) < max (1.333), ATR qty wins
-	atrValue := decimal.NewFromFloat(4)
-	priceAtSignal := decimal.NewFromFloat(150)
-	budget := decimal.NewFromFloat(1000)
-	riskPct := decimal.NewFromFloat(0.01)
-	atrMult := decimal.NewFromFloat(2.0)
-	targetTrades := 5
+// ---------------------------------------------------------------------------
+// Dynamic position sizing — table-driven, calls the real service
+// ---------------------------------------------------------------------------
 
-	riskAmount := budget.Mul(riskPct)                                                // 10
-	atrStop := atrValue.Mul(atrMult)                                                 // 8
-	wantQty := riskAmount.Div(atrStop)                                               // 1.25
-	maxQty := budget.Div(decimal.NewFromInt(int64(targetTrades))).Div(priceAtSignal) // 1.333
-
-	if wantQty.GreaterThan(maxQty) {
-		t.Fatalf("test invariant broken: ATR qty should be <= max qty")
+func TestDynamicPositionSizing(t *testing.T) {
+	tests := []struct {
+		name    string
+		atr     decimal.Decimal
+		price   decimal.Decimal
+		budget  decimal.Decimal
+		targets int
+		wantQty decimal.Decimal
+	}{
+		{
+			// riskAmount = 1000 × 0.01 = 10
+			// atrStop    = 4 × 2.0    = 8
+			// atrQty     = 10 / 8     = 1.25
+			// maxQty     = 1000/5/150 ≈ 1.333  →  1.25 < 1.333, ATR qty wins
+			name:    "ATR-based uncapped",
+			atr:     decimal.NewFromFloat(4),
+			price:   decimal.NewFromFloat(150),
+			budget:  decimal.NewFromFloat(1000),
+			targets: 5,
+			wantQty: decimal.NewFromFloat(1.25),
+		},
+		{
+			// riskAmount = 10, atrStop = 0.1×2 = 0.2, rawQty = 50
+			// maxQty     = 1000/5/100 = 2  →  50 > 2, capped at 2
+			name:    "ATR-based capped by slot max",
+			atr:     decimal.NewFromFloat(0.1),
+			price:   decimal.NewFromFloat(100),
+			budget:  decimal.NewFromFloat(1000),
+			targets: 5,
+			wantQty: decimal.NewFromInt(2),
+		},
+		{
+			// ATR = 0 → fallback equal-weight: 1000/5/100 = 2
+			name:    "zero ATR falls back to fixed sizing",
+			atr:     decimal.NewFromInt(0),
+			price:   decimal.NewFromFloat(100),
+			budget:  decimal.NewFromFloat(1000),
+			targets: 5,
+			wantQty: decimal.NewFromInt(2),
+		},
 	}
 
-	gotQty := riskAmount.Div(atrStop)
-	if !gotQty.Equal(wantQty) {
-		t.Fatalf("expected qty %s, got %s", wantQty, gotQty)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remaining := tt.targets
+			account := &model.AccountTransfer{
+				ID:              uuid.New(),
+				AmountUSD:       tt.budget,
+				TargetTrades:    tt.targets,
+				RemainingTrades: &remaining,
+			}
+			signal := &model.Signal{
+				ID:            uuid.New(),
+				Symbol:        "AAPL",
+				PriceAtSignal: tt.price,
+				Indicators:    model.SignalIndicators{ATR: tt.atr},
+				CreatedAt:     time.Now().UTC(),
+			}
+
+			placer := &mockOrderPlacer{}
+			svc := newTestTradeServiceWith(&mockTradeRepo{}, &mockAccountTransferRepo{}, placer)
+
+			trade, err := svc.ExecuteBuyTrade(context.Background(), signal, account)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if trade == nil {
+				t.Fatal("expected trade, got nil")
+			}
+			if !trade.Quantity.Equal(tt.wantQty) {
+				t.Errorf("trade.Quantity = %s, want %s", trade.Quantity, tt.wantQty)
+			}
+
+			// Verify the broker received the same quantity.
+			if len(placer.placedOrders) != 1 {
+				t.Fatalf("expected 1 placed order, got %d", len(placer.placedOrders))
+			}
+			if placer.placedOrders[0].Qty == nil {
+				t.Fatal("placed order has nil Qty")
+			}
+			if !(*placer.placedOrders[0].Qty).Equal(tt.wantQty) {
+				t.Errorf("broker order Qty = %s, want %s", *placer.placedOrders[0].Qty, tt.wantQty)
+			}
+		})
 	}
 }
 
-func TestDynamicPositionSizing_CappedByMaxSlot(t *testing.T) {
-	// When ATR is very small, risk-based qty would be huge → must be capped.
-	atrValue := decimal.NewFromFloat(0.1)
-	budget := decimal.NewFromFloat(1000)
-	price := decimal.NewFromFloat(100)
-	riskPct := decimal.NewFromFloat(0.01)
-	atrMult := decimal.NewFromFloat(2.0)
-	targetTrades := 5
-
-	riskAmount := budget.Mul(riskPct)                                        // 10
-	atrStop := atrValue.Mul(atrMult)                                         // 0.2
-	rawQty := riskAmount.Div(atrStop)                                        // 50 — too large
-	maxQty := budget.Div(decimal.NewFromInt(int64(targetTrades))).Div(price) // 2
-
-	if !rawQty.GreaterThan(maxQty) {
-		t.Fatal("test invariant broken: raw qty should exceed max qty in this scenario")
-	}
-
-	gotQty := rawQty
-	if gotQty.GreaterThan(maxQty) {
-		gotQty = maxQty
-	}
-	if !gotQty.Equal(maxQty) {
-		t.Fatalf("expected capped qty %s, got %s", maxQty, gotQty)
-	}
-}
+// ---------------------------------------------------------------------------
+// ApplyTradeUpdates
+// ---------------------------------------------------------------------------
 
 func TestApplyTradeUpdates_TerminalStatusIgnored(t *testing.T) {
 	tradeID := uuid.New()
@@ -239,7 +311,6 @@ func TestApplyTradeUpdates_TerminalStatusIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Nothing should have been written since the trade was already terminal.
 	if len(tradeRepo.updated) != 0 {
 		t.Fatalf("expected 0 updates for terminal trade, got %d", len(tradeRepo.updated))
 	}
