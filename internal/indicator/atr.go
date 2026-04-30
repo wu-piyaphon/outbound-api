@@ -14,15 +14,15 @@ type Bar struct {
 
 func CalculateATR(bars []Bar, period int) (decimal.Decimal, error) {
 	if period <= 0 {
-		return decimal.Zero, errors.New("Period is less than zero. Unable to calculate ATR.")
+		return decimal.Zero, errors.New("period must be greater than zero")
 	}
 
 	if len(bars) == 0 {
-		return decimal.Zero, errors.New("Bars array is empty. Unable to calculate ATR.")
+		return decimal.Zero, errors.New("bars slice is empty")
 	}
 
 	if len(bars) < period+1 {
-		return decimal.Zero, errors.New("Not enough bars to calculate ATR.")
+		return decimal.Zero, errors.New("not enough bars to calculate ATR")
 	}
 
 	trs := make([]decimal.Decimal, 0, len(bars)-1)

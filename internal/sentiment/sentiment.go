@@ -41,7 +41,11 @@ var negativeKeywords = []string{
 	"investigation", "lawsuit", "bankrupt", "recall", "layoffs", "sell",
 }
 
-func (p *alpacaNewsProvider) Analyze(_ context.Context, symbol string) (*Result, error) {
+func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Result, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("sentiment.Analyze: context cancelled before GetNews: %w", err)
+	}
+
 	end := time.Now().UTC()
 	start := end.Add(-24 * time.Hour)
 

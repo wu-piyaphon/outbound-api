@@ -8,11 +8,11 @@ import (
 
 func CalculateRSI(prices []decimal.Decimal, period int) (decimal.Decimal, error) {
 	if period <= 0 {
-		return decimal.Zero, errors.New("Period is less than zero. Unable to calculate RSI.")
+		return decimal.Zero, errors.New("period must be greater than zero")
 	}
 
 	if len(prices) <= period {
-		return decimal.Zero, errors.New("Not enough price data to calculate RSI.")
+		return decimal.Zero, errors.New("not enough price data to calculate RSI")
 	}
 
 	var gains []decimal.Decimal

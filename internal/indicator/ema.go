@@ -8,15 +8,15 @@ import (
 
 func CalculateEMA(values []decimal.Decimal, period int) (decimal.Decimal, error) {
 	if period <= 0 {
-		return decimal.Zero, errors.New("Period is less than zero. Unable to calculate EMA.")
+		return decimal.Zero, errors.New("period must be greater than zero")
 	}
 
 	if len(values) == 0 {
-		return decimal.Zero, errors.New("Values array is empty. Unable to calculate EMA.")
+		return decimal.Zero, errors.New("values slice is empty")
 	}
 
 	if len(values) < period {
-		return decimal.Zero, errors.New("Not enough values to calculate EMA.")
+		return decimal.Zero, errors.New("not enough values to calculate EMA")
 	}
 
 	multiplier := decimal.NewFromInt(2).Div(decimal.NewFromInt(int64(period + 1)))
