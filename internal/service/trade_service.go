@@ -20,6 +20,8 @@ type OrderPlacer interface {
 	PlaceOrder(req alpaca.PlaceOrderRequest) (*alpaca.Order, error)
 }
 
+// TradeService manages the full lifecycle of a trade: sizing, order placement,
+// exit evaluation, and reconciliation of broker status updates.
 type TradeService interface {
 	ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error)
 	ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error)
@@ -38,6 +40,8 @@ type tradeService struct {
 	takeProfitMultiplier      decimal.Decimal
 }
 
+// NewTradeService constructs a TradeService with the supplied repositories,
+// broker client, and risk parameters read from configuration.
 func NewTradeService(
 	tradeRepository repository.TradeRepository,
 	accountTransferRepository repository.AccountTransferRepository,
@@ -60,6 +64,9 @@ func NewTradeService(
 	}
 }
 
+// ExecuteSellTrade places a market sell order for the full quantity of the
+// parent buy trade and persists the resulting sell trade record. The parent
+// trade's AccountTransferID is required to maintain the budget link.
 func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signal, trade *model.Trade) (*model.Trade, error) {
 	if trade.AccountTransferID == nil {
 		return nil, fmt.Errorf("ExecuteSellTrade: parent trade %s has nil account_transfer_id", trade.ID)
@@ -99,11 +106,18 @@ func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signa
 	return sellTrade, nil
 }
 
+// isUniqueConstraintError reports whether err is a PostgreSQL unique-constraint
+// violation (SQLSTATE 23505). Used to swallow duplicate sell orders that arise
+// when a bar triggers both stop-loss and take-profit in the same tick.
 func isUniqueConstraintError(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// ExecuteBuyTrade sizes a position using ATR-based risk, places a market buy
+// order, and persists the trade while atomically decrementing the account's
+// remaining trade slot. Returns nil, nil when the account is exhausted or when
+// sizing produces a zero quantity.
 func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal, account *model.AccountTransfer) (*model.Trade, error) {
 	if account == nil {
 		return nil, fmt.Errorf("ExecuteBuyTrade: account is nil")
@@ -192,6 +206,10 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 	return trade, nil
 }
 
+// EvaluateAndExecuteExits checks all open buy trades for symbol against their
+// stop-loss and take-profit levels and fires a sell order for each that is
+// triggered. The entire evaluation loop runs inside a single transaction so
+// that partial failures do not leave inconsistent exit state.
 func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol string, currentPrice decimal.Decimal) error {
 	err := t.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
 		openTrades, err := t.tradeRepository.GetOpenBuyTradesBySymbol(txCtx, symbol)
@@ -241,6 +259,11 @@ func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol strin
 	return nil
 }
 
+// ApplyTradeUpdates reconciles an Alpaca broker event with the persisted trade
+// record. It is idempotent: events arriving for trades already in a terminal
+// status (filled, rejected, cancelled) are silently ignored to handle replay.
+// When a buy order is rejected or cancelled the account slot is restored so
+// the budget remains available for future trades.
 func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.TradeUpdate, updateStatus model.Status) error {
 	trade, err := t.tradeRepository.GetByAlpacaOrderID(ctx, update.Order.ID)
 	if err != nil {

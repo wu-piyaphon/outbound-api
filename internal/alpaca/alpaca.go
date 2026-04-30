@@ -9,6 +9,8 @@ import (
 	marketdatastream "github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 )
 
+// NewAlpacaClient returns an Alpaca trading client configured with the
+// provided credentials and base URL (paper or live endpoint).
 func NewAlpacaClient(APIKey, APISecret, BaseURL string) *alpaca.Client {
 	c := alpaca.NewClient(alpaca.ClientOpts{
 		APIKey:    APIKey,
@@ -19,6 +21,8 @@ func NewAlpacaClient(APIKey, APISecret, BaseURL string) *alpaca.Client {
 	return c
 }
 
+// NewMarketDataClient returns a market data client targeting the IEX feed,
+// which provides free real-time data without requiring a live brokerage account.
 func NewMarketDataClient(APIKey, APISecret string) *marketdata.Client {
 	c := marketdata.NewClient(
 		marketdata.ClientOpts{
@@ -31,6 +35,9 @@ func NewMarketDataClient(APIKey, APISecret string) *marketdata.Client {
 	return c
 }
 
+// NewStocksStreamClient creates a WebSocket stocks stream client that forwards
+// incoming bars for symbols into barChan. The caller owns barChan and must
+// ensure it is not closed while the client is running.
 func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan chan<- marketdatastream.Bar) *marketdatastream.StocksClient {
 
 	barHandler := func(bar marketdatastream.Bar) {
@@ -46,6 +53,8 @@ func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan c
 	return c
 }
 
+// SubscribeToBars adds symbols to an already-connected stream client and wires
+// their bar events to barChan using the same handler pattern as NewStocksStreamClient.
 func SubscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdatastream.Bar, symbols ...string) error {
 	barHandler := func(bar marketdatastream.Bar) {
 		barChan <- bar
@@ -59,6 +68,7 @@ func SubscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdata
 	return nil
 }
 
+// UnsubscribeFromBars removes symbols from the active stream subscription.
 func UnsubscribeFromBars(c *marketdatastream.StocksClient, symbols ...string) error {
 	err := c.UnsubscribeFromBars(symbols...)
 	if err != nil {
@@ -68,6 +78,9 @@ func UnsubscribeFromBars(c *marketdatastream.StocksClient, symbols ...string) er
 	return nil
 }
 
+// StreamTradeUpdates opens a WebSocket stream for account-level trade update
+// events and forwards each update to tradeUpdateChan. It blocks until ctx is
+// cancelled or the connection fails, at which point the error is returned.
 func StreamTradeUpdates(
 	ctx context.Context,
 	c *alpaca.Client,

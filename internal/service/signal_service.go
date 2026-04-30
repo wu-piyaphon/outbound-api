@@ -13,6 +13,8 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/sentiment"
 )
 
+// SignalService evaluates market conditions against the five-layer trading
+// strategy and persists the resulting buy or sell signals.
 type SignalService interface {
 	GetAllSignals(ctx context.Context) ([]model.Signal, error)
 	CreateSellSignal(ctx context.Context, symbol string, priceAtSignal decimal.Decimal, reasoning string) (*model.Signal, error)
@@ -26,6 +28,8 @@ type signalService struct {
 	sentimentProvider sentiment.Provider
 }
 
+// NewSignalService constructs a SignalService backed by the supplied
+// repositories, indicator cache, and sentiment provider.
 func NewSignalService(
 	signalRepo repository.SignalRepository,
 	tradeRepo repository.TradeRepository,
@@ -40,6 +44,8 @@ func NewSignalService(
 	}
 }
 
+// GetAllSignals returns every signal record in the database, ordered by the
+// repository's default (typically creation time).
 func (s *signalService) GetAllSignals(ctx context.Context) ([]model.Signal, error) {
 	rows, err := s.signalRepo.GetAll(ctx)
 	if err != nil {
@@ -48,6 +54,9 @@ func (s *signalService) GetAllSignals(ctx context.Context) ([]model.Signal, erro
 	return rows, nil
 }
 
+// CreateSellSignal persists a manually triggered sell signal for symbol at the
+// given price with the supplied reasoning string. Unlike EvaluateBuySignal, it
+// bypasses the five-layer checks and is used for externally driven exits.
 func (s *signalService) CreateSellSignal(ctx context.Context, symbol string, priceAtSignal decimal.Decimal, reasoning string) (*model.Signal, error) {
 	signal := &model.Signal{
 		ID:            uuid.New(),
@@ -68,6 +77,10 @@ func (s *signalService) CreateSellSignal(ctx context.Context, symbol string, pri
 	return signal, nil
 }
 
+// EvaluateBuySignal runs the five-layer strategy check for symbol at
+// currentPrice. It returns a persisted Signal when all layers pass, or nil,
+// nil when any layer fails or a position is already open. Errors are returned
+// only for infrastructure failures, not for normal negative evaluations.
 func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error) {
 	hasPosition, err := s.tradeRepo.HasOpenPosition(ctx, symbol)
 	if err != nil {

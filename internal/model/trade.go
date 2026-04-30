@@ -7,6 +7,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Trade represents a single order placement and its lifecycle from pending
+// through to a terminal status. A sell trade carries a ParentID pointing to
+// the originating buy trade, forming a paired round-trip record.
 type Trade struct {
 	ID                uuid.UUID        `db:"id" json:"id"`
 	ParentID          *uuid.UUID       `db:"parent_id" json:"parent_id"`
@@ -28,6 +31,8 @@ type Trade struct {
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`
 }
 
+// ExitSignal carries the trade to be closed and the reason string ("stop_loss"
+// or "take_profit") that triggered the exit evaluation.
 type ExitSignal struct {
 	Trade  *Trade
 	Reason string

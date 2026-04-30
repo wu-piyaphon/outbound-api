@@ -12,6 +12,9 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
+// AccountTransferRepository manages account transfer records and their
+// remaining trade slot counters. Slot adjustments are always performed inside
+// a transaction together with the corresponding trade write.
 type AccountTransferRepository interface {
 	Create(ctx context.Context, transfer *model.AccountTransfer) error
 	GetAvailableBudget(ctx context.Context) (*model.AccountTransfer, error)
@@ -63,6 +66,9 @@ const getActiveAccountTransfersQuery = `
 	LIMIT 1
 `
 
+// GetAvailableBudget returns the oldest transfer that still has remaining trade
+// slots (FIFO), or nil if no eligible transfer exists. The caller uses the
+// returned record's AmountUSD and TargetTrades for position sizing.
 func (a *accountTransferRepository) GetAvailableBudget(ctx context.Context) (*model.AccountTransfer, error) {
 	var t model.AccountTransfer
 	err := pgxscan.Get(ctx, GetDB(ctx, a.pool), &t, getActiveAccountTransfersQuery)
@@ -82,6 +88,8 @@ const decrementRemainingTradesQuery = `
 	WHERE id = $1 AND remaining_trades > 0
 `
 
+// DecrementRemainingTrades reduces the slot counter by one. The WHERE clause
+// guards against decrementing below zero, so a no-op result is not an error.
 func (a *accountTransferRepository) DecrementRemainingTrades(ctx context.Context, transferID uuid.UUID) error {
 	args := []any{
 		transferID,
