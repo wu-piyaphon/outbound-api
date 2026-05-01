@@ -38,10 +38,16 @@ func NewMarketDataClient(APIKey, APISecret string) *marketdata.Client {
 // NewStocksStreamClient creates a WebSocket stocks stream client that forwards
 // incoming bars for symbols into barChan. The caller owns barChan and must
 // ensure it is not closed while the client is running.
+//
+// The handler uses a non-blocking send so a momentarily busy worker pool never
+// stalls the stream callback. Bars dropped due to a full buffer are silently
+// discarded; the next bar for the same symbol will be processed normally.
 func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan chan<- marketdatastream.Bar) *marketdatastream.StocksClient {
-
 	barHandler := func(bar marketdatastream.Bar) {
-		barChan <- bar
+		select {
+		case barChan <- bar:
+		default:
+		}
 	}
 
 	c := marketdatastream.NewStocksClient(
@@ -54,10 +60,14 @@ func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan c
 }
 
 // SubscribeToBars adds symbols to an already-connected stream client and wires
-// their bar events to barChan using the same handler pattern as NewStocksStreamClient.
+// their bar events to barChan using the same non-blocking handler pattern as
+// NewStocksStreamClient.
 func SubscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdatastream.Bar, symbols ...string) error {
 	barHandler := func(bar marketdatastream.Bar) {
-		barChan <- bar
+		select {
+		case barChan <- bar:
+		default:
+		}
 	}
 
 	err := c.SubscribeToBars(barHandler, symbols...)
