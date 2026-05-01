@@ -1,18 +1,34 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/wu-piyaphon/outbound-api/internal/bot"
 )
 
 type BotHandlers struct {
 	controller *bot.Controller
+	apiKey     string
 }
 
-func NewBotHandlers(controller *bot.Controller) *BotHandlers {
-	return &BotHandlers{controller: controller}
+func NewBotHandlers(controller *bot.Controller, apiKey string) *BotHandlers {
+	return &BotHandlers{controller: controller, apiKey: apiKey}
+}
+
+// RequireAPIKey is middleware that enforces a Bearer token matching apiKey.
+// Requests without a valid Authorization header are rejected with 401.
+func (h *BotHandlers) RequireAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(token), []byte(h.apiKey)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
 }
 
 type statusResponse struct {

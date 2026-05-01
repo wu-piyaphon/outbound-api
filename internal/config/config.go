@@ -16,6 +16,10 @@ type Config struct {
 	DatabaseURL     string
 	Port            string
 	BotAutoStart    bool
+	// BotAPIKey is required to call any bot-control endpoint
+	// (/bot/start, /bot/pause, /bot/stop, /bot/status).
+	// Set via BOT_API_KEY env var.
+	BotAPIKey string
 
 	// RiskPerTradePct is the fraction of available budget risked per trade.
 	// Default: 0.01 (1%). Set via RISK_PER_TRADE_PCT env var.
@@ -42,6 +46,7 @@ func Load() (*Config, error) {
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		Port:            os.Getenv("PORT"),
 		BotAutoStart:    os.Getenv("BOT_AUTOSTART") != "false",
+		BotAPIKey:       os.Getenv("BOT_API_KEY"),
 	}
 
 	if cfg.Port == "" {
@@ -93,6 +98,9 @@ func (c *Config) validate() error {
 	}
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
+	}
+	if c.BotAPIKey == "" {
+		return fmt.Errorf("BOT_API_KEY is required")
 	}
 	return nil
 }

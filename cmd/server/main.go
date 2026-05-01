@@ -324,14 +324,14 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	botHandlers := bothttp.NewBotHandlers(botController)
+	botHandlers := bothttp.NewBotHandlers(botController, cfg.BotAPIKey)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/bot/start", botHandlers.Start)
-	mux.HandleFunc("/bot/pause", botHandlers.Pause)
-	mux.HandleFunc("/bot/stop", botHandlers.Stop)
-	mux.HandleFunc("/bot/status", botHandlers.Status)
+	mux.HandleFunc("/bot/start", botHandlers.RequireAPIKey(botHandlers.Start))
+	mux.HandleFunc("/bot/pause", botHandlers.RequireAPIKey(botHandlers.Pause))
+	mux.HandleFunc("/bot/stop", botHandlers.RequireAPIKey(botHandlers.Stop))
+	mux.HandleFunc("/bot/status", botHandlers.RequireAPIKey(botHandlers.Status))
 
 	httpServer := &http.Server{
 		Addr:         ":" + cfg.Port,
