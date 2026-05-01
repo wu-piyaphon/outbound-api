@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
@@ -141,6 +143,9 @@ func (t *tradeRepository) GetByAlpacaOrderID(ctx context.Context, alpacaOrderID 
 		&trade.CreatedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("GetByAlpacaOrderID: %w", err)
 	}
 
