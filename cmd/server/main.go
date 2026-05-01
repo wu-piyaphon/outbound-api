@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -56,6 +57,34 @@ func seedIndicators(symbol string, client *marketdata.Client, cache *indicator.I
 	log.Printf("seedIndicators: %s ready", symbol)
 }
 
+// connectWithRetry runs connectFn in a loop, backing off exponentially after
+// each failure. It returns only when ctx is cancelled.
+func connectWithRetry(ctx context.Context, name string, connectFn func() error) {
+	delay := time.Second
+	const maxDelay = 64 * time.Second
+
+	for {
+		log.Printf("%s: connecting", name)
+		if err := connectFn(); err != nil {
+			if ctx.Err() != nil {
+				return // context cancelled — clean shutdown
+			}
+			log.Printf("%s: disconnected (%v); retrying in %s", name, err, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return
+			}
+			if delay < maxDelay {
+				delay *= 2
+			}
+			continue
+		}
+		// connectFn returned nil — context was cancelled, clean exit.
+		return
+	}
+}
+
 func main() {
 	_ = godotenv.Load()
 
@@ -102,7 +131,12 @@ func main() {
 		seedIndicators(symbol, marketDataClient, indicatorCache)
 	}
 
-	sentimentProvider := sentiment.NewAlpacaNewsProvider(marketDataClient)
+	// Sentiment results are cached for 5 minutes per symbol to avoid a network
+	// round-trip on every bar tick during hot-path signal evaluation.
+	sentimentProvider := sentiment.NewCachedProvider(
+		sentiment.NewAlpacaNewsProvider(marketDataClient),
+		5*time.Minute,
+	)
 
 	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, sentimentProvider)
 	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier)
@@ -115,15 +149,16 @@ func main() {
 	}
 	botController := bot.NewController(initialBotState)
 
-	barChan := make(chan stream.Bar)
+	// barChan is owned by the stream client; workers are read-only consumers.
+	// Buffered to absorb bursts; excess bars are dropped non-blocking.
+	barChan := make(chan stream.Bar, 200)
 
 	streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists, barChan)
 
-	go func() {
-		if err := streamClient.Connect(streamCtx); err != nil {
-			log.Printf("Alpaca stream client stopped with error: %v", err)
-		}
-	}()
+	go connectWithRetry(streamCtx, "bar stream", func() error {
+		return streamClient.Connect(streamCtx)
+	})
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -264,11 +299,11 @@ func main() {
 	}
 
 	tradeUpdateChan := make(chan alpacaSDK.TradeUpdate, 64)
-	go func() {
-		if err := alpaca.StreamTradeUpdates(streamCtx, alpacaClient, tradeUpdateChan); err != nil {
-			log.Printf("trade updates stream stopped: %v", err)
-		}
-	}()
+
+	// Supervised so fill/cancel events are not lost after a disconnect.
+	go connectWithRetry(streamCtx, "trade updates stream", func() error {
+		return alpaca.StreamTradeUpdates(streamCtx, alpacaClient, tradeUpdateChan)
+	})
 
 	go func() {
 		for {
@@ -288,23 +323,39 @@ func main() {
 		}
 	}()
 
+	mux := http.NewServeMux()
 	botHandlers := bothttp.NewBotHandlers(botController)
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	http.HandleFunc("/bot/start", botHandlers.Start)
-	http.HandleFunc("/bot/pause", botHandlers.Pause)
-	http.HandleFunc("/bot/stop", botHandlers.Stop)
-	http.HandleFunc("/bot/status", botHandlers.Status)
+	mux.HandleFunc("/bot/start", botHandlers.Start)
+	mux.HandleFunc("/bot/pause", botHandlers.Pause)
+	mux.HandleFunc("/bot/stop", botHandlers.Stop)
+	mux.HandleFunc("/bot/status", botHandlers.Status)
+
+	httpServer := &http.Server{
+		Addr:         ":" + cfg.Port,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}
 
 	go func() {
-		if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil && err != http.ErrServerClosed {
-			log.Printf("failed to start HTTP server: %v", err)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("HTTP server error: %v", err)
 		}
 	}()
 
 	log.Printf("Server listening on :%s | bot state: %s", cfg.Port, botController.State())
 	<-quit
 	log.Println("shutting down...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutdown: %v", err)
+	}
+
 	streamCancel()
 }
