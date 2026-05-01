@@ -88,17 +88,22 @@ const decrementRemainingTradesQuery = `
 	WHERE id = $1 AND remaining_trades > 0
 `
 
-// DecrementRemainingTrades reduces the slot counter by one. The WHERE clause
-// guards against decrementing below zero, so a no-op result is not an error.
+// DecrementRemainingTrades reduces the slot counter by one. It returns
+// ErrNoRemainingSlots when no row is updated (counter already zero), so
+// concurrent buy workers racing on the last slot are guaranteed to see an
+// explicit error rather than silently over-committing.
 func (a *accountTransferRepository) DecrementRemainingTrades(ctx context.Context, transferID uuid.UUID) error {
 	args := []any{
 		transferID,
 		time.Now().UTC(),
 	}
 
-	_, err := GetDB(ctx, a.pool).Exec(ctx, decrementRemainingTradesQuery, args...)
+	tag, err := GetDB(ctx, a.pool).Exec(ctx, decrementRemainingTradesQuery, args...)
 	if err != nil {
 		return fmt.Errorf("DecrementRemainingTrades: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("DecrementRemainingTrades: %w", ErrNoRemainingSlots)
 	}
 
 	return nil

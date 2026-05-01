@@ -2,10 +2,16 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// ErrNoRemainingSlots is returned by DecrementRemainingTrades when the
+// account transfer has no slots left. Callers should treat this as a normal
+// "nothing to do" condition, not an infrastructure failure.
+var ErrNoRemainingSlots = errors.New("account transfer has no remaining trade slots")
 
 type DBTX interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)

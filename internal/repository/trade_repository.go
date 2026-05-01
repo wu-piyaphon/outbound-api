@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
@@ -12,6 +13,7 @@ type TradeRepository interface {
 	GetOpenBuyTradesBySymbol(ctx context.Context, symbol string) ([]*model.Trade, error)
 	GetByAlpacaOrderID(ctx context.Context, alpacaOrderID string) (*model.Trade, error)
 	Update(ctx context.Context, trade model.Trade) error
+	Delete(ctx context.Context, id uuid.UUID) error
 	HasOpenPosition(ctx context.Context, symbol string) (bool, error)
 }
 
@@ -143,6 +145,19 @@ func (t *tradeRepository) GetByAlpacaOrderID(ctx context.Context, alpacaOrderID 
 	}
 
 	return &trade, nil
+}
+
+const deleteTradeQuery = `DELETE FROM trades WHERE id = $1`
+
+// Delete removes a trade record by ID. Used to clean up a pre-inserted sell
+// record when the subsequent broker call fails, so the next evaluation cycle
+// can retry without hitting the unique-sell-per-buy constraint.
+func (t *tradeRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	_, err := GetDB(ctx, t.pool).Exec(ctx, deleteTradeQuery, id)
+	if err != nil {
+		return fmt.Errorf("Delete: %w", err)
+	}
+	return nil
 }
 
 const hasOpenPositionQuery = `

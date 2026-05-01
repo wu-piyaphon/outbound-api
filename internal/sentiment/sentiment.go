@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
@@ -106,4 +107,53 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 	)
 
 	return &Result{Positive: positive, Score: score, Reasoning: reasoning}, nil
+}
+
+type cachedEntry struct {
+	result    *Result
+	expiresAt time.Time
+}
+
+// cachedProvider wraps a Provider and caches Analyze results per symbol for
+// ttl duration, avoiding redundant news API calls on every bar tick.
+type cachedProvider struct {
+	inner Provider
+	ttl   time.Duration
+	mu    sync.RWMutex
+	cache map[string]cachedEntry
+}
+
+// NewCachedProvider returns a Provider that memoises Analyze results per
+// symbol for ttl. A zero or negative ttl falls through to the inner provider
+// on every call.
+func NewCachedProvider(inner Provider, ttl time.Duration) Provider {
+	return &cachedProvider{
+		inner: inner,
+		ttl:   ttl,
+		cache: make(map[string]cachedEntry),
+	}
+}
+
+func (c *cachedProvider) Analyze(ctx context.Context, symbol string) (*Result, error) {
+	if c.ttl > 0 {
+		c.mu.RLock()
+		if entry, ok := c.cache[symbol]; ok && time.Now().Before(entry.expiresAt) {
+			c.mu.RUnlock()
+			return entry.result, nil
+		}
+		c.mu.RUnlock()
+	}
+
+	result, err := c.inner.Analyze(ctx, symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.ttl > 0 {
+		c.mu.Lock()
+		c.cache[symbol] = cachedEntry{result: result, expiresAt: time.Now().Add(c.ttl)}
+		c.mu.Unlock()
+	}
+
+	return result, nil
 }

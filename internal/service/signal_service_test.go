@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 	"github.com/wu-piyaphon/outbound-api/internal/indicator"
@@ -141,5 +143,95 @@ func TestEvaluateBuySignal_AllLayersPass(t *testing.T) {
 	}
 	if signal.Indicators.EMA.IsZero() || signal.Indicators.RSI.IsZero() || signal.Indicators.ATR.IsZero() {
 		t.Error("expected non-zero indicators on the signal")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sentiment cache (integration between cachedProvider and signal evaluation)
+// ---------------------------------------------------------------------------
+
+// countingSentimentProvider counts how many times Analyze is called.
+type countingSentimentProvider struct {
+	calls  atomic.Int64
+	result *sentiment.Result
+}
+
+func (c *countingSentimentProvider) Analyze(_ context.Context, _ string) (*sentiment.Result, error) {
+	c.calls.Add(1)
+	return c.result, nil
+}
+
+// TestSentimentCache_HitAvoidsNetworkCall verifies that NewCachedProvider does
+// not call the inner provider a second time within the TTL window.
+func TestSentimentCache_HitAvoidsNetworkCall(t *testing.T) {
+	inner := &countingSentimentProvider{
+		result: &sentiment.Result{Positive: true, Score: 0.8, Reasoning: "test"},
+	}
+	cached := sentiment.NewCachedProvider(inner, 5*time.Minute)
+
+	// First call — should hit the inner provider.
+	if _, err := cached.Analyze(context.Background(), "AAPL"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Second call within TTL — should be served from cache.
+	if _, err := cached.Analyze(context.Background(), "AAPL"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := inner.calls.Load(); got != 1 {
+		t.Errorf("expected inner provider called once (cache hit on second call), got %d", got)
+	}
+}
+
+// TestSentimentCache_MissAfterExpiry verifies that the inner provider is called
+// again once the TTL expires.
+func TestSentimentCache_MissAfterExpiry(t *testing.T) {
+	inner := &countingSentimentProvider{
+		result: &sentiment.Result{Positive: true, Score: 0.8, Reasoning: "test"},
+	}
+	// Very short TTL so the entry expires quickly.
+	cached := sentiment.NewCachedProvider(inner, 1*time.Millisecond)
+
+	if _, err := cached.Analyze(context.Background(), "TSLA"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(5 * time.Millisecond) // let the TTL expire
+
+	if _, err := cached.Analyze(context.Background(), "TSLA"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := inner.calls.Load(); got != 2 {
+		t.Errorf("expected inner provider called twice after TTL expiry, got %d", got)
+	}
+}
+
+// TestSentimentCache_IndependentPerSymbol verifies that each symbol has its own
+// cache entry and does not share state with other symbols.
+func TestSentimentCache_IndependentPerSymbol(t *testing.T) {
+	inner := &countingSentimentProvider{
+		result: &sentiment.Result{Positive: true, Score: 0.7, Reasoning: "test"},
+	}
+	cached := sentiment.NewCachedProvider(inner, 5*time.Minute)
+
+	for _, sym := range []string{"AAPL", "MSFT", "TSLA"} {
+		if _, err := cached.Analyze(context.Background(), sym); err != nil {
+			t.Fatalf("unexpected error for %s: %v", sym, err)
+		}
+	}
+
+	if got := inner.calls.Load(); got != 3 {
+		t.Errorf("expected 3 inner calls (one per distinct symbol), got %d", got)
+	}
+
+	// Second round — all should hit cache.
+	for _, sym := range []string{"AAPL", "MSFT", "TSLA"} {
+		if _, err := cached.Analyze(context.Background(), sym); err != nil {
+			t.Fatalf("unexpected error for %s: %v", sym, err)
+		}
+	}
+	if got := inner.calls.Load(); got != 3 {
+		t.Errorf("expected still 3 inner calls after cache hits, got %d", got)
 	}
 }
