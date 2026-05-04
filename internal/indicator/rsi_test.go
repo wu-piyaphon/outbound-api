@@ -15,10 +15,13 @@ func TestCalculateRSI(t *testing.T) {
 		wantErr  bool
 	}{
 		{
-			name:     "normal calculation",
-			prices:   []decimal.Decimal{decimal.NewFromInt(10), decimal.NewFromInt(10), decimal.NewFromInt(10), decimal.NewFromInt(12), decimal.NewFromInt(12), decimal.NewFromInt(12), decimal.NewFromInt(14), decimal.NewFromInt(13)},
-			period:   5,
-			expected: decimal.NewFromInt(80),
+			// Wilder's RSI: seed avgGain=0.4, avgLoss=0 over first 5 changes,
+			// then smooth two more bars (+2, -1) → RSI = 7200/97 ≈ 74.2268.
+			name:   "normal calculation",
+			prices: []decimal.Decimal{decimal.NewFromInt(10), decimal.NewFromInt(10), decimal.NewFromInt(10), decimal.NewFromInt(12), decimal.NewFromInt(12), decimal.NewFromInt(12), decimal.NewFromInt(14), decimal.NewFromInt(13)},
+			period: 5,
+			// 7200/97 rounded to 4 decimal places; comparison uses Round(4).
+			expected: decimal.NewFromFloat(74.2268),
 		},
 		{
 			name:    "negative period",
@@ -76,13 +79,13 @@ func TestCalculateRSI(t *testing.T) {
 				return
 			}
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-			if !result.Equal(tt.expected) {
-				t.Fatalf("expected %v, got %v", tt.expected, result)
-			}
+		if !result.Round(4).Equal(tt.expected.Round(4)) {
+			t.Fatalf("expected %v, got %v", tt.expected.Round(4), result.Round(4))
+		}
 		})
 	}
 }

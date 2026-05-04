@@ -6,6 +6,12 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// CalculateRSI computes the Relative Strength Index using Wilder's smoothed
+// moving average, which matches the formula used by standard charting platforms
+// (TradingView, Bloomberg). A minimum of period+1 prices is required to seed
+// the initial simple average; all subsequent bars apply Wilder's smoothing:
+//
+//	avgGain = (prevAvgGain × (period−1) + currentGain) / period
 func CalculateRSI(prices []decimal.Decimal, period int) (decimal.Decimal, error) {
 	if period <= 0 {
 		return decimal.Zero, errors.New("period must be greater than zero")
@@ -15,35 +21,35 @@ func CalculateRSI(prices []decimal.Decimal, period int) (decimal.Decimal, error)
 		return decimal.Zero, errors.New("not enough price data to calculate RSI")
 	}
 
-	var gains []decimal.Decimal
-	var losses []decimal.Decimal
+	periodD := decimal.NewFromInt(int64(period))
+	periodMinus1 := decimal.NewFromInt(int64(period - 1))
 
-	recentPrices := prices[len(prices)-period-1:]
-
-	for idx, price := range recentPrices[1:] {
-		result := price.Sub(recentPrices[idx])
-
-		if result.GreaterThan(decimal.Zero) {
-			gains = append(gains, result)
-		}
-		if result.LessThan(decimal.Zero) {
-			losses = append(losses, result.Abs())
+	// Seed: simple average of the first `period` price changes.
+	var sumGain, sumLoss decimal.Decimal
+	for i := 1; i <= period; i++ {
+		change := prices[i].Sub(prices[i-1])
+		if change.GreaterThan(decimal.Zero) {
+			sumGain = sumGain.Add(change)
+		} else if change.LessThan(decimal.Zero) {
+			sumLoss = sumLoss.Add(change.Abs())
 		}
 	}
 
-	sumGains := decimal.Zero
-	sumLosses := decimal.Zero
+	avgGain := sumGain.Div(periodD)
+	avgLoss := sumLoss.Div(periodD)
 
-	for _, gain := range gains {
-		sumGains = sumGains.Add(gain)
+	// Wilder's smoothed moving average for all remaining bars.
+	for i := period + 1; i < len(prices); i++ {
+		change := prices[i].Sub(prices[i-1])
+		var gain, loss decimal.Decimal
+		if change.GreaterThan(decimal.Zero) {
+			gain = change
+		} else if change.LessThan(decimal.Zero) {
+			loss = change.Abs()
+		}
+		avgGain = avgGain.Mul(periodMinus1).Add(gain).Div(periodD)
+		avgLoss = avgLoss.Mul(periodMinus1).Add(loss).Div(periodD)
 	}
-
-	for _, loss := range losses {
-		sumLosses = sumLosses.Add(loss)
-	}
-
-	avgGain := sumGains.Div(decimal.NewFromInt(int64(period)))
-	avgLoss := sumLosses.Div(decimal.NewFromInt(int64(period)))
 
 	if avgLoss.IsZero() {
 		return decimal.NewFromInt(100), nil
