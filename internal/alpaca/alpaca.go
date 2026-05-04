@@ -3,6 +3,7 @@ package alpaca
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
@@ -91,13 +92,23 @@ func UnsubscribeFromBars(c *marketdatastream.StocksClient, symbols ...string) er
 // StreamTradeUpdates opens a WebSocket stream for account-level trade update
 // events and forwards each update to tradeUpdateChan. It blocks until ctx is
 // cancelled or the connection fails, at which point the error is returned.
+//
+// The handler uses a non-blocking send to avoid stalling the WebSocket callback
+// thread if the consumer falls behind. A dropped update is logged as a warning;
+// the connectWithRetry supervisor reconnects and replays events, and
+// ApplyTradeUpdates is idempotent on terminal-status trades, so replay is safe.
 func StreamTradeUpdates(
 	ctx context.Context,
 	c *alpaca.Client,
 	tradeUpdateChan chan<- alpaca.TradeUpdate,
 ) error {
 	handler := func(tu alpaca.TradeUpdate) {
-		tradeUpdateChan <- tu
+		select {
+		case tradeUpdateChan <- tu:
+		default:
+			log.Printf("StreamTradeUpdates: WARNING: trade update channel full, dropping event %s for order %s",
+				tu.Event, tu.Order.ID)
+		}
 	}
 	if err := c.StreamTradeUpdates(ctx, handler, alpaca.StreamTradeUpdatesRequest{}); err != nil {
 		return fmt.Errorf("StreamTradeUpdates: %w", err)

@@ -121,9 +121,12 @@ func (a *accountTransferRepository) IncrementRemainingTrades(ctx context.Context
 		time.Now().UTC(),
 	}
 
-	_, err := GetDB(ctx, a.pool).Exec(ctx, incrementRemainingTradesQuery, args...)
+	tag, err := GetDB(ctx, a.pool).Exec(ctx, incrementRemainingTradesQuery, args...)
 	if err != nil {
 		return fmt.Errorf("IncrementRemainingTrades: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("IncrementRemainingTrades: no account transfer found for id %s", transferID)
 	}
 
 	return nil

@@ -23,6 +23,7 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 	"github.com/wu-piyaphon/outbound-api/internal/sentiment"
 	"github.com/wu-piyaphon/outbound-api/internal/service"
+	"github.com/wu-piyaphon/outbound-api/migrations"
 
 	alpacaSDK "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 )
@@ -107,7 +108,9 @@ func main() {
 
 	log.Println("Successfully connected to the database")
 
-	database.Migrate(cfg.DatabaseURL)
+	if err := database.Migrate(cfg.DatabaseURL, migrations.FS); err != nil {
+		log.Fatalf("failed to run migrations: %v", err)
+	}
 
 	watchlistRepo := repository.NewWatchlistRepository(pool)
 	watchlistService := service.NewWatchlistService(watchlistRepo)
