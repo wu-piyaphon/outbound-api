@@ -10,12 +10,12 @@ import (
 type Config struct {
 	AlpacaAPIKey    string
 	AlpacaAPISecret string
-	AlpacaBaseURL   string
-	SupabaseURL     string
-	SupabaseKey     string
-	DatabaseURL     string
-	Port            string
-	BotAutoStart    bool
+	// AlpacaBaseURL must be set explicitly to either the paper or live endpoint.
+	// Leaving it empty risks the SDK defaulting to an unintended environment.
+	AlpacaBaseURL string
+	DatabaseURL   string
+	Port          string
+	BotAutoStart  bool
 	// BotAPIKey is required to call any bot-control endpoint
 	// (/bot/start, /bot/pause, /bot/stop, /bot/status).
 	// Set via BOT_API_KEY env var.
@@ -41,8 +41,6 @@ func Load() (*Config, error) {
 		AlpacaAPIKey:    os.Getenv("ALPACA_API_KEY"),
 		AlpacaAPISecret: os.Getenv("ALPACA_API_SECRET"),
 		AlpacaBaseURL:   os.Getenv("ALPACA_BASE_URL"),
-		SupabaseURL:     os.Getenv("SUPABASE_URL"),
-		SupabaseKey:     os.Getenv("SUPABASE_KEY"),
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		Port:            os.Getenv("PORT"),
 		BotAutoStart:    os.Getenv("BOT_AUTOSTART") != "false",
@@ -95,6 +93,9 @@ func (c *Config) validate() error {
 	}
 	if c.AlpacaAPISecret == "" {
 		return fmt.Errorf("ALPACA_API_SECRET is required")
+	}
+	if c.AlpacaBaseURL == "" {
+		return fmt.Errorf("ALPACA_BASE_URL is required (set to paper or live endpoint to avoid SDK defaulting to the wrong environment)")
 	}
 	if c.DatabaseURL == "" {
 		return fmt.Errorf("DATABASE_URL is required")
