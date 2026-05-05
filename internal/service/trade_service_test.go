@@ -113,8 +113,10 @@ func (m *mockAccountTransferRepo) IncrementRemainingTrades(_ context.Context, _ 
 
 type mockSignalRepo struct{}
 
-func (m *mockSignalRepo) GetAll(_ context.Context) ([]model.Signal, error) { return nil, nil }
-func (m *mockSignalRepo) Create(_ context.Context, _ *model.Signal) error  { return nil }
+func (m *mockSignalRepo) GetAll(_ context.Context) ([]model.Signal, error)    { return nil, nil }
+func (m *mockSignalRepo) Create(_ context.Context, _ *model.Signal) error     { return nil }
+func (m *mockSignalRepo) Delete(_ context.Context, _ uuid.UUID) error         { return nil }
+func (m *mockSignalRepo) MarkExecuted(_ context.Context, _ uuid.UUID) error   { return nil }
 
 type mockTransactor struct{}
 

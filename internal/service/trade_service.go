@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
@@ -103,15 +103,15 @@ func (t *tradeService) ExecuteSellTrade(ctx context.Context, signal *model.Signa
 		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if delErr := t.tradeRepository.Delete(cleanCtx, sellTrade.ID); delErr != nil {
-			log.Printf("ExecuteSellTrade: cleanup after broker error: delete trade %s: %v", sellTrade.ID, delErr)
+			slog.Error("ExecuteSellTrade: cleanup: delete trade failed", "trade_id", sellTrade.ID, "error", delErr)
 		}
 		return nil, fmt.Errorf("ExecuteSellTrade: %w", err)
 	}
 
 	sellTrade.AlpacaOrderID = &placedOrder.ID
 	if err := t.tradeRepository.Update(ctx, *sellTrade); err != nil {
-		log.Printf("ExecuteSellTrade: CRITICAL: order %s placed but trade %s alpaca_order_id not persisted: %v",
-			placedOrder.ID, sellTrade.ID, err)
+		slog.Error("ExecuteSellTrade: CRITICAL: order placed but alpaca_order_id not persisted",
+			"order_id", placedOrder.ID, "trade_id", sellTrade.ID, "error", err)
 	}
 
 	return sellTrade, nil
@@ -192,17 +192,26 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		CreatedAt: signal.CreatedAt,
 	}
 
-	// Slot and trade record are committed together; a concurrent worker that
-	// wins the last slot causes ErrNoRemainingSlots here, aborting before any
-	// broker call.
+	// Position check, trade insert, and slot decrement are all committed in one
+	// transaction. Re-checking HasOpenPosition here closes the TOCTOU window
+	// between the earlier check in EvaluateBuySignal and this commit: two workers
+	// can both pass the initial gate before either writes, but only one can win
+	// this inner check and proceed to place a broker order.
 	err := t.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		hasPosition, err := t.tradeRepository.HasOpenPosition(txCtx, signal.Symbol)
+		if err != nil {
+			return fmt.Errorf("HasOpenPosition: %w", err)
+		}
+		if hasPosition {
+			return repository.ErrPositionAlreadyOpen
+		}
 		if err := t.tradeRepository.Create(txCtx, *trade); err != nil {
 			return err
 		}
 		return t.accountTransferRepository.DecrementRemainingTrades(txCtx, *trade.AccountTransferID)
 	})
 	if err != nil {
-		if errors.Is(err, repository.ErrNoRemainingSlots) {
+		if errors.Is(err, repository.ErrNoRemainingSlots) || errors.Is(err, repository.ErrPositionAlreadyOpen) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("ExecuteBuyTrade: %w", err)
@@ -225,8 +234,13 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 	// Store the order ID so ApplyTradeUpdates can reconcile broker events.
 	trade.AlpacaOrderID = &placedOrder.ID
 	if err := t.tradeRepository.Update(ctx, *trade); err != nil {
-		log.Printf("ExecuteBuyTrade: CRITICAL: order %s placed but trade %s alpaca_order_id not persisted: %v",
-			placedOrder.ID, trade.ID, err)
+		slog.Error("ExecuteBuyTrade: CRITICAL: order placed but alpaca_order_id not persisted",
+			"order_id", placedOrder.ID, "trade_id", trade.ID, "error", err)
+	}
+
+	if err := t.signalRepository.MarkExecuted(ctx, signal.ID); err != nil {
+		slog.Warn("ExecuteBuyTrade: could not mark signal as executed",
+			"signal_id", signal.ID, "trade_id", trade.ID, "error", err)
 	}
 
 	return trade, nil
@@ -249,8 +263,8 @@ func (t *tradeService) cancelTradeAndRestoreSlot(trade *model.Trade) {
 		}
 		return nil
 	}); err != nil {
-		log.Printf("cancelTradeAndRestoreSlot: CRITICAL: trade %s not cancelled and slot not restored: %v",
-			trade.ID, err)
+		slog.Error("cancelTradeAndRestoreSlot: CRITICAL: trade not cancelled and slot not restored",
+			"trade_id", trade.ID, "error", err)
 	}
 }
 
@@ -311,8 +325,13 @@ func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol strin
 
 			if err := t.tradeRepository.Create(txCtx, *sellTrade); err != nil {
 				if isUniqueConstraintError(err) {
-					// A sell for this buy already exists (concurrent evaluation).
-					continue
+					// GetOpenBuyTradesBySymbol already filters out buys that have a sell
+					// (NOT EXISTS) and FOR UPDATE SKIP LOCKED prevents concurrent writes
+					// to the same row, so 23505 here indicates an unexpected state.
+					// Return an error (aborting this tick) rather than continuing in an
+					// aborted PostgreSQL transaction, which would corrupt subsequent inserts.
+					return fmt.Errorf("EvaluateAndExecuteExits: unexpected duplicate sell for buy %s: %w",
+						trade.ID, err)
 				}
 				return fmt.Errorf("EvaluateAndExecuteExits: create sell trade: %w", err)
 			}
@@ -335,23 +354,33 @@ func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol strin
 			TimeInForce: alpaca.Day,
 		})
 		if err != nil {
-			// Delete the pre-inserted record so the next evaluation can retry
-			// without hitting the unique-sell-per-buy constraint.
+			// Delete both the pre-inserted trade and signal so the next evaluation
+			// cycle can retry without hitting the unique-sell-per-buy constraint
+			// and without accumulating orphan signal rows.
 			cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if delErr := t.tradeRepository.Delete(cleanCtx, p.sellTrade.ID); delErr != nil {
-				log.Printf("EvaluateAndExecuteExits: cleanup after broker error: delete trade %s: %v",
-					p.sellTrade.ID, delErr)
+				slog.Error("EvaluateAndExecuteExits: cleanup: delete sell trade failed",
+					"trade_id", p.sellTrade.ID, "error", delErr)
+			}
+			if delErr := t.signalRepository.Delete(cleanCtx, p.signal.ID); delErr != nil {
+				slog.Error("EvaluateAndExecuteExits: cleanup: delete sell signal failed",
+					"signal_id", p.signal.ID, "error", delErr)
 			}
 			cancel()
-			log.Printf("EvaluateAndExecuteExits: place sell order failed for parent trade %s: %v",
-				*p.sellTrade.ParentID, err)
+			slog.Error("EvaluateAndExecuteExits: place sell order failed",
+				"parent_trade_id", *p.sellTrade.ParentID, "error", err)
 			continue
 		}
 
 		p.sellTrade.AlpacaOrderID = &placedOrder.ID
 		if err := t.tradeRepository.Update(ctx, *p.sellTrade); err != nil {
-			log.Printf("EvaluateAndExecuteExits: CRITICAL: sell order %s placed but trade %s order ID not persisted: %v",
-				placedOrder.ID, p.sellTrade.ID, err)
+			slog.Error("EvaluateAndExecuteExits: CRITICAL: sell order placed but order ID not persisted",
+				"order_id", placedOrder.ID, "trade_id", p.sellTrade.ID, "error", err)
+		}
+
+		if err := t.signalRepository.MarkExecuted(ctx, p.signal.ID); err != nil {
+			slog.Warn("EvaluateAndExecuteExits: could not mark sell signal as executed",
+				"signal_id", p.signal.ID, "trade_id", p.sellTrade.ID, "error", err)
 		}
 	}
 
@@ -368,8 +397,8 @@ func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.Trad
 		return fmt.Errorf("ApplyTradeUpdates: %w", err)
 	}
 	if trade == nil {
-		log.Printf("ApplyTradeUpdates: no trade found for order %s (event: %s) — skipping",
-			update.Order.ID, update.Event)
+		slog.Warn("ApplyTradeUpdates: no trade found for order — skipping",
+			"order_id", update.Order.ID, "event", update.Event)
 		return nil
 	}
 
