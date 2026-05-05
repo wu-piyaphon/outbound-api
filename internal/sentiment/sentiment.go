@@ -3,6 +3,7 @@ package sentiment
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,7 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 		TotalLimit: 10,
 	})
 	if err != nil {
+		slog.Warn("sentiment: news API error; proceeding with neutral sentiment", "symbol", symbol, "error", err)
 		return &Result{
 			Positive:  true,
 			Score:     0.5,
