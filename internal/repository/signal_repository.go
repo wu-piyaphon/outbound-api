@@ -5,12 +5,20 @@ import (
 	"fmt"
 
 	"github.com/georgysavva/scany/v2/pgxscan"
+	"github.com/google/uuid"
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
 type SignalRepository interface {
 	GetAll(ctx context.Context) ([]model.Signal, error)
 	Create(ctx context.Context, signal *model.Signal) error
+	// Delete removes a signal by ID. Used to clean up a signal record that was
+	// orphaned when the subsequent broker call failed, so the next evaluation
+	// cycle can retry cleanly.
+	Delete(ctx context.Context, id uuid.UUID) error
+	// MarkExecuted flips is_executed to true once the corresponding broker order
+	// has been successfully placed.
+	MarkExecuted(ctx context.Context, id uuid.UUID) error
 }
 
 type signalRepository struct {
@@ -39,5 +47,21 @@ func (r *signalRepository) Create(ctx context.Context, signal *model.Signal) err
 		return fmt.Errorf("Create: %w", err)
 	}
 
+	return nil
+}
+
+func (r *signalRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	_, err := GetDB(ctx, r.pool).Exec(ctx, "DELETE FROM signals WHERE id = $1", id)
+	if err != nil {
+		return fmt.Errorf("Delete: %w", err)
+	}
+	return nil
+}
+
+func (r *signalRepository) MarkExecuted(ctx context.Context, id uuid.UUID) error {
+	_, err := GetDB(ctx, r.pool).Exec(ctx, "UPDATE signals SET is_executed = true WHERE id = $1", id)
+	if err != nil {
+		return fmt.Errorf("MarkExecuted: %w", err)
+	}
 	return nil
 }

@@ -165,21 +165,25 @@ func (t *tradeRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// hasOpenPositionQuery checks for any active buy trade (pending, open, or filled)
+// that has no corresponding sell child. Checking all non-terminal statuses
+// prevents a second buy being opened while an earlier one is still pending or
+// open with the broker, which would violate the one-position-per-symbol rule.
 const hasOpenPositionQuery = `
 	SELECT EXISTS (
 		SELECT 1 FROM trades
 		WHERE symbol = $1
 		AND side = $2
-		AND status = $3
+		AND status IN ('pending', 'open', 'filled')
 		AND NOT EXISTS (
 			SELECT 1 FROM trades sell
-			WHERE sell.side = $4 AND sell.parent_id = trades.id
+			WHERE sell.side = $3 AND sell.parent_id = trades.id
 		)
 	)`
 
 func (t *tradeRepository) HasOpenPosition(ctx context.Context, symbol string) (bool, error) {
 	var exists bool
-	err := GetDB(ctx, t.pool).QueryRow(ctx, hasOpenPositionQuery, symbol, model.SideBuy, model.StatusFilled, model.SideSell).Scan(&exists)
+	err := GetDB(ctx, t.pool).QueryRow(ctx, hasOpenPositionQuery, symbol, model.SideBuy, model.SideSell).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("HasOpenPosition: %w", err)
 	}
