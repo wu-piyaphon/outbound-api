@@ -3,7 +3,7 @@ package alpaca
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
@@ -41,13 +41,14 @@ func NewMarketDataClient(APIKey, APISecret string) *marketdata.Client {
 // ensure it is not closed while the client is running.
 //
 // The handler uses a non-blocking send so a momentarily busy worker pool never
-// stalls the stream callback. Bars dropped due to a full buffer are silently
-// discarded; the next bar for the same symbol will be processed normally.
+// stalls the stream callback. When the buffer is full the bar is dropped and
+// logged as a warning so signal starvation is visible in production logs.
 func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan chan<- marketdatastream.Bar) *marketdatastream.StocksClient {
 	barHandler := func(bar marketdatastream.Bar) {
 		select {
 		case barChan <- bar:
 		default:
+			slog.Warn("bar dropped: channel full", "symbol", bar.Symbol)
 		}
 	}
 
@@ -68,6 +69,7 @@ func SubscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdata
 		select {
 		case barChan <- bar:
 		default:
+			slog.Warn("bar dropped: channel full", "symbol", bar.Symbol)
 		}
 	}
 
@@ -106,8 +108,7 @@ func StreamTradeUpdates(
 		select {
 		case tradeUpdateChan <- tu:
 		default:
-			log.Printf("StreamTradeUpdates: WARNING: trade update channel full, dropping event %s for order %s",
-				tu.Event, tu.Order.ID)
+			slog.Warn("trade update dropped: channel full", "event", tu.Event, "order_id", tu.Order.ID)
 		}
 	}
 	if err := c.StreamTradeUpdates(ctx, handler, alpaca.StreamTradeUpdatesRequest{}); err != nil {
