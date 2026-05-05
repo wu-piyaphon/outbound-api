@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,7 +38,7 @@ func seedIndicators(symbol string, client *marketdata.Client, cache *indicator.I
 		End:       time.Now(),
 	})
 	if err != nil {
-		log.Printf("seedIndicators: GetBars for %s: %v", symbol, err)
+		slog.Error("seedIndicators: GetBars failed", "symbol", symbol, "error", err)
 		return
 	}
 
@@ -51,26 +52,37 @@ func seedIndicators(symbol string, client *marketdata.Client, cache *indicator.I
 	}
 
 	if err := cache.Seed(symbol, ibars, 200, 14, 14); err != nil {
-		log.Printf("seedIndicators: Seed for %s: %v", symbol, err)
+		slog.Error("seedIndicators: Seed failed", "symbol", symbol, "error", err)
 		return
 	}
 
-	log.Printf("seedIndicators: %s ready", symbol)
+	slog.Info("seedIndicators: ready", "symbol", symbol)
 }
 
 // connectWithRetry runs connectFn in a loop, backing off exponentially after
 // each failure. It returns only when ctx is cancelled.
+//
+// After any return from connectFn, ctx is checked first — both nil and error
+// returns can result from context cancellation. If nil is returned without
+// context cancellation (unexpected SDK behaviour), the backoff is reset and the
+// connection is retried immediately so the supervisor does not stop silently.
 func connectWithRetry(ctx context.Context, name string, connectFn func() error) {
-	delay := time.Second
 	const maxDelay = 64 * time.Second
+	delay := time.Second
 
 	for {
-		log.Printf("%s: connecting", name)
-		if err := connectFn(); err != nil {
-			if ctx.Err() != nil {
-				return // context cancelled — clean shutdown
-			}
-			log.Printf("%s: disconnected (%v); retrying in %s", name, err, delay)
+		slog.Info("connecting", "stream", name)
+		err := connectFn()
+
+		// Check context before inspecting the error — the SDK may return nil on
+		// a context-cancelled disconnect (clean shutdown) or an error wrapping
+		// context.Canceled.
+		if ctx.Err() != nil {
+			return
+		}
+
+		if err != nil {
+			slog.Warn("stream disconnected", "stream", name, "error", err, "retry_in", delay)
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -79,19 +91,26 @@ func connectWithRetry(ctx context.Context, name string, connectFn func() error) 
 			if delay < maxDelay {
 				delay *= 2
 			}
-			continue
+		} else {
+			// SDK returned nil without context cancellation — unexpected clean
+			// disconnect. Reset backoff (connection was healthy) and retry.
+			slog.Warn("stream closed without error; reconnecting immediately", "stream", name)
+			delay = time.Second
 		}
-		// connectFn returned nil — context was cancelled, clean exit.
-		return
 	}
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	_ = godotenv.Load()
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -102,14 +121,16 @@ func main() {
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("failed to connect to the database: %v", err)
+		slog.Error("failed to connect to the database", "error", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
-	log.Println("Successfully connected to the database")
+	slog.Info("connected to database")
 
 	if err := database.Migrate(cfg.DatabaseURL, migrations.FS); err != nil {
-		log.Fatalf("failed to run migrations: %v", err)
+		slog.Error("failed to run migrations", "error", err)
+		os.Exit(1)
 	}
 
 	watchlistRepo := repository.NewWatchlistRepository(pool)
@@ -117,7 +138,8 @@ func main() {
 
 	watchlists, err := watchlistService.GetAllActive(ctx)
 	if err != nil {
-		log.Fatalf("failed to get watchlists: %v", err)
+		slog.Error("failed to get watchlists", "error", err)
+		os.Exit(1)
 	}
 
 	accountTransferRepo := repository.NewAccountTransferRepository(pool)
@@ -148,26 +170,35 @@ func main() {
 	initialBotState := bot.StateRunning
 	if !cfg.BotAutoStart {
 		initialBotState = bot.StateStopped
-		log.Println("Bot started in stopped state — use POST /bot/start to begin trading")
+		slog.Info("bot started in stopped state — use POST /bot/start to begin trading")
 	}
 	botController := bot.NewController(initialBotState)
 
 	// barChan is owned by the stream client; workers are read-only consumers.
-	// Buffered to absorb bursts; excess bars are dropped non-blocking.
+	// Buffered to absorb bursts; excess bars are dropped with a log warning.
 	barChan := make(chan stream.Bar, 200)
 
 	streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists, barChan)
 
-	go connectWithRetry(streamCtx, "bar stream", func() error {
-		return streamClient.Connect(streamCtx)
-	})
+	// wg tracks all long-lived goroutines so main can wait for a clean drain on shutdown.
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		connectWithRetry(streamCtx, "bar stream", func() error {
+			return streamClient.Connect(streamCtx)
+		})
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	// Watchlist refresh: checks for symbol additions/removals every 30 seconds
 	// and seeds the indicator cache for any newly added symbols.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
@@ -181,7 +212,7 @@ func main() {
 			case <-ticker.C:
 				fetchedWatchlists, err := watchlistService.GetAllActive(streamCtx)
 				if err != nil {
-					log.Printf("failed to get watchlists: %v", err)
+					slog.Error("watchlist refresh: failed to get watchlists", "error", err)
 					continue
 				}
 
@@ -207,12 +238,11 @@ func main() {
 				if len(newSymbols) > 0 {
 					err = alpaca.SubscribeToBars(streamClient, barChan, newSymbols...)
 					if err != nil {
-						log.Printf("failed to subscribe to new symbols: %v", err)
+						slog.Error("watchlist refresh: failed to subscribe to new symbols", "symbols", newSymbols, "error", err)
 					} else {
-						log.Printf("subscribed to new symbols: %v", newSymbols)
+						slog.Info("watchlist refresh: subscribed to new symbols", "symbols", newSymbols)
 						for _, s := range newSymbols {
 							subscribed[s] = struct{}{}
-							// Seed indicators for the new symbol before bars arrive.
 							seedIndicators(s, marketDataClient, indicatorCache)
 						}
 					}
@@ -221,9 +251,9 @@ func main() {
 				if len(removedSymbols) > 0 {
 					err = alpaca.UnsubscribeFromBars(streamClient, removedSymbols...)
 					if err != nil {
-						log.Printf("failed to unsubscribe from symbols: %v", err)
+						slog.Error("watchlist refresh: failed to unsubscribe from symbols", "symbols", removedSymbols, "error", err)
 					} else {
-						log.Printf("unsubscribed from symbols: %v", removedSymbols)
+						slog.Info("watchlist refresh: unsubscribed from symbols", "symbols", removedSymbols)
 						for _, s := range removedSymbols {
 							delete(subscribed, s)
 						}
@@ -238,22 +268,24 @@ func main() {
 
 	// Daily re-seed: refresh indicators once every 24 hours so that the EMA,
 	// RSI, and ATR values incorporate each new day's bar without restarting.
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				log.Println("daily indicator re-seed starting")
+				slog.Info("daily indicator re-seed starting")
 				watchlists, err := watchlistService.GetAllActive(streamCtx)
 				if err != nil {
-					log.Printf("daily re-seed: failed to get watchlists: %v", err)
+					slog.Error("daily re-seed: failed to get watchlists", "error", err)
 					continue
 				}
 				for _, s := range watchlists {
 					seedIndicators(s, marketDataClient, indicatorCache)
 				}
-				log.Println("daily indicator re-seed complete")
+				slog.Info("daily indicator re-seed complete")
 			case <-streamCtx.Done():
 				return
 			}
@@ -262,7 +294,9 @@ func main() {
 
 	const numWorkers = 5
 	for range numWorkers {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for {
 				select {
 				case bar := <-barChan:
@@ -272,25 +306,23 @@ func main() {
 
 					livePrice := decimal.NewFromFloat(bar.Close)
 
-					err := tradeService.EvaluateAndExecuteExits(streamCtx, bar.Symbol, livePrice)
-					if err != nil {
-						log.Printf("failed to check exit conditions for %s: %v", bar.Symbol, err)
+					if err := tradeService.EvaluateAndExecuteExits(streamCtx, bar.Symbol, livePrice); err != nil {
+						slog.Error("failed to check exit conditions", "symbol", bar.Symbol, "error", err)
 					}
 
 					entrySignal, err := signalService.EvaluateBuySignal(streamCtx, bar.Symbol, livePrice)
 					if err != nil {
-						log.Printf("failed to evaluate signal for %s: %v", bar.Symbol, err)
+						slog.Error("failed to evaluate buy signal", "symbol", bar.Symbol, "error", err)
 					}
 
 					if entrySignal != nil {
 						availableBudget, err := accountTransferService.GetAvailableBudget(streamCtx)
 						if err != nil || availableBudget == nil {
-							log.Printf("failed to get active account transfer: %v", err)
+							slog.Error("failed to get active account transfer", "error", err)
 							continue
 						}
-						_, err = tradeService.ExecuteBuyTrade(streamCtx, entrySignal, availableBudget)
-						if err != nil {
-							log.Printf("failed to execute buy trade for %s: %v", entrySignal.Symbol, err)
+						if _, err = tradeService.ExecuteBuyTrade(streamCtx, entrySignal, availableBudget); err != nil {
+							slog.Error("failed to execute buy trade", "symbol", entrySignal.Symbol, "error", err)
 						}
 					}
 
@@ -304,21 +336,27 @@ func main() {
 	tradeUpdateChan := make(chan alpacaSDK.TradeUpdate, 64)
 
 	// Supervised so fill/cancel events are not lost after a disconnect.
-	go connectWithRetry(streamCtx, "trade updates stream", func() error {
-		return alpaca.StreamTradeUpdates(streamCtx, alpacaClient, tradeUpdateChan)
-	})
-
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		connectWithRetry(streamCtx, "trade updates stream", func() error {
+			return alpaca.StreamTradeUpdates(streamCtx, alpacaClient, tradeUpdateChan)
+		})
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case update := <-tradeUpdateChan:
 				status, ok := alpaca.MapAlpacaEventToStatus(update.Event)
 				if !ok {
-					log.Printf("unknown alpaca event: %s", update.Event)
+					slog.Warn("unknown alpaca event", "event", update.Event)
 					continue
 				}
 				if err := tradeService.ApplyTradeUpdates(streamCtx, update, status); err != nil {
-					log.Printf("failed to handle trade update: %v", err)
+					slog.Error("failed to handle trade update", "error", err)
 				}
 			case <-streamCtx.Done():
 				return
@@ -329,6 +367,13 @@ func main() {
 	mux := http.NewServeMux()
 	botHandlers := bothttp.NewBotHandlers(botController, cfg.BotAPIKey)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		pingCtx, pingCancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer pingCancel()
+		if err := pool.Ping(pingCtx); err != nil {
+			slog.Warn("health check: DB ping failed", "error", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/bot/start", botHandlers.RequireAPIKey(botHandlers.Start))
@@ -346,19 +391,31 @@ func main() {
 
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP server error: %v", err)
+			slog.Error("HTTP server error", "error", err)
 		}
 	}()
 
-	log.Printf("Server listening on :%s | bot state: %s", cfg.Port, botController.State())
+	slog.Info("server listening", "port", cfg.Port, "bot_state", botController.State())
 	<-quit
-	log.Println("shutting down...")
+	slog.Info("shutting down...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown: %v", err)
+		slog.Error("HTTP server shutdown error", "error", err)
 	}
 
 	streamCancel()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		slog.Info("all workers stopped")
+	case <-time.After(10 * time.Second):
+		slog.Warn("shutdown timed out waiting for workers to stop")
+	}
 }
