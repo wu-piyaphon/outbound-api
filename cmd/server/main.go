@@ -164,7 +164,7 @@ func main() {
 	)
 
 	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, sentimentProvider)
-	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier)
+	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier, cfg.CommissionFeePct, cfg.FXFeePct)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
 	initialBotState := bot.StateRunning

@@ -61,10 +61,18 @@ func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 	return nil
 }
 
+// getOpenBuyTradesBySymbolQuery fetches all active buy trades for a symbol that
+// have no sell child. Both 'filled' and 'open' (partial-fill) statuses are
+// included so that stop-loss and take-profit levels are enforced as soon as
+// shares are held, not only after the order is completely filled.
+//
+// For partially-filled buys the sell quantity will be trade.Quantity (the
+// originally ordered amount). Alpaca will reject the sell if fewer shares are
+// held; the cleanup path in EvaluateAndExecuteExits retries on the next bar.
 const getOpenBuyTradesBySymbolQuery = `
 	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at
 	FROM trades
-	WHERE symbol = $1 AND side = 'buy' AND status = 'filled' AND NOT EXISTS (
+	WHERE symbol = $1 AND side = 'buy' AND status IN ('open', 'filled') AND NOT EXISTS (
 		SELECT 1 FROM trades sell
 		WHERE sell.side = 'sell' AND sell.parent_id = trades.id 
 	)

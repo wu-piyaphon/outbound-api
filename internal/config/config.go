@@ -34,6 +34,16 @@ type Config struct {
 	// takeProfit = entryPrice + ATR × TakeProfitMultiplier.
 	// Default: 3.0. Set via TAKE_PROFIT_MULTIPLIER env var.
 	TakeProfitMultiplier decimal.Decimal
+
+	// CommissionFeePct is the fractional commission charged per filled trade
+	// (applied to notional value). Default: 0.0005 (0.05%).
+	// Set via COMMISSION_FEE_PCT env var.
+	CommissionFeePct decimal.Decimal
+
+	// FXFeePct is the fractional FX conversion fee amortised per filled trade
+	// (applied to notional value). Default: 0.0001 (0.01%).
+	// Set via FX_FEE_PCT env var.
+	FXFeePct decimal.Decimal
 }
 
 func Load() (*Config, error) {
@@ -78,6 +88,24 @@ func Load() (*Config, error) {
 	cfg.TakeProfitMultiplier, err = decimal.NewFromString(takeProfitMultiplier)
 	if err != nil {
 		return nil, fmt.Errorf("config: invalid TAKE_PROFIT_MULTIPLIER: %w", err)
+	}
+
+	commissionFeePct := os.Getenv("COMMISSION_FEE_PCT")
+	if commissionFeePct == "" {
+		commissionFeePct = "0.0005"
+	}
+	cfg.CommissionFeePct, err = decimal.NewFromString(commissionFeePct)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid COMMISSION_FEE_PCT: %w", err)
+	}
+
+	fxFeePct := os.Getenv("FX_FEE_PCT")
+	if fxFeePct == "" {
+		fxFeePct = "0.0001"
+	}
+	cfg.FXFeePct, err = decimal.NewFromString(fxFeePct)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid FX_FEE_PCT: %w", err)
 	}
 
 	if err := cfg.validate(); err != nil {

@@ -157,9 +157,11 @@ func newTestTradeServiceWith(tradeRepo repository.TradeRepository, atRepo reposi
 		&mockSignalRepo{},
 		&mockTransactor{},
 		placer,
-		decimal.NewFromFloat(0.01), // riskPerTradePct
-		decimal.NewFromFloat(2.0),  // atrRiskMultiplier
-		decimal.NewFromFloat(3.0),  // takeProfitMultiplier
+		decimal.NewFromFloat(0.01),   // riskPerTradePct
+		decimal.NewFromFloat(2.0),    // atrRiskMultiplier
+		decimal.NewFromFloat(3.0),    // takeProfitMultiplier
+		decimal.NewFromFloat(0.0005), // commissionFeePct
+		decimal.NewFromFloat(0.0001), // fxFeePct
 	)
 }
 
@@ -389,6 +391,8 @@ func TestExecuteBuyTrade_ConcurrentSlotRace(t *testing.T) {
 		decimal.NewFromFloat(0.01),
 		decimal.NewFromFloat(2.0),
 		decimal.NewFromFloat(3.0),
+		decimal.NewFromFloat(0.0005),
+		decimal.NewFromFloat(0.0001),
 	)
 
 	const workers = 5

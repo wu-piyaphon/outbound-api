@@ -39,6 +39,8 @@ type tradeService struct {
 	riskPerTradePct           decimal.Decimal
 	atrRiskMultiplier         decimal.Decimal
 	takeProfitMultiplier      decimal.Decimal
+	commissionFeePct          decimal.Decimal
+	fxFeePct                  decimal.Decimal
 }
 
 // NewTradeService constructs a TradeService with the supplied repositories,
@@ -52,6 +54,8 @@ func NewTradeService(
 	riskPerTradePct decimal.Decimal,
 	atrRiskMultiplier decimal.Decimal,
 	takeProfitMultiplier decimal.Decimal,
+	commissionFeePct decimal.Decimal,
+	fxFeePct decimal.Decimal,
 ) TradeService {
 	return &tradeService{
 		tradeRepository:           tradeRepository,
@@ -62,6 +66,8 @@ func NewTradeService(
 		riskPerTradePct:           riskPerTradePct,
 		atrRiskMultiplier:         atrRiskMultiplier,
 		takeProfitMultiplier:      takeProfitMultiplier,
+		commissionFeePct:          commissionFeePct,
+		fxFeePct:                  fxFeePct,
 	}
 }
 
@@ -414,8 +420,9 @@ func (t *tradeService) ApplyTradeUpdates(ctx context.Context, update alpaca.Trad
 		trade.AvgFillPrice = update.Order.FilledAvgPrice
 
 		if updateStatus == model.StatusFilled && update.Order.FilledAvgPrice != nil {
-			commissionFee := update.Order.FilledQty.Mul(*update.Order.FilledAvgPrice).Mul(decimal.NewFromFloat(0.0005))
-			fxFeeAmortized := update.Order.FilledQty.Mul(*update.Order.FilledAvgPrice).Mul(decimal.NewFromFloat(0.0001))
+			notional := update.Order.FilledQty.Mul(*update.Order.FilledAvgPrice)
+			commissionFee := notional.Mul(t.commissionFeePct)
+			fxFeeAmortized := notional.Mul(t.fxFeePct)
 			trade.CommissionFee = &commissionFee
 			trade.FXFeeAmortized = &fxFeeAmortized
 		}
