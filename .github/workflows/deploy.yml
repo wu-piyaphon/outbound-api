@@ -1,0 +1,93 @@
+name: Deploy to Vultr
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          NEW_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.VULTR_HOST }}
+          username: ${{ secrets.VULTR_USER }}
+          key: ${{ secrets.VULTR_SSH_KEY }}
+          envs: IMAGE,NEW_SHA
+          script: |
+            COMPOSE="/home/deploy/apps/outbound/docker-compose.yml"
+
+            PREV_SHA=$(docker inspect outbound-api --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || true)
+
+            docker compose -f "$COMPOSE" pull outbound-api
+            docker compose -f "$COMPOSE" up -d outbound-api
+
+            for i in $(seq 1 10); do
+              if curl -sf http://localhost:8080/health; then
+                echo "Deployment healthy (sha=$NEW_SHA)"
+                exit 0
+              fi
+              echo "Waiting for service... attempt $i/10"
+              sleep 3
+            done
+
+            echo "Health check failed — rolling back"
+            if [ -n "$PREV_SHA" ]; then
+              docker compose -f "$COMPOSE" stop outbound-api
+              docker tag "$IMAGE:$PREV_SHA" "$IMAGE:latest"
+              docker compose -f "$COMPOSE" up -d outbound-api
+              echo "Rolled back to sha=$PREV_SHA"
+            else
+              echo "No previous SHA found — manual intervention required"
+            fi
+            exit 1
