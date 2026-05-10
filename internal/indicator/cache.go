@@ -10,10 +10,15 @@ import (
 // IndicatorState holds the most recently computed daily indicator values for
 // a single symbol. All fields are computed from daily OHLC bars and remain
 // constant until the next daily re-seed.
+//
+// RSIPrev is RSI computed from bars excluding the latest close (yesterday's
+// RSI); RSI uses the full series including the latest close (today). Together
+// they enable RSI cross-up detection (v2 shadow path).
 type IndicatorState struct {
-	EMA decimal.Decimal
-	RSI decimal.Decimal
-	ATR decimal.Decimal
+	EMA     decimal.Decimal
+	RSI     decimal.Decimal
+	RSIPrev decimal.Decimal
+	ATR     decimal.Decimal
 }
 
 // IndicatorReader is the read-only view of the cache consumed by services.
@@ -51,6 +56,14 @@ func (c *IndicatorCache) Seed(symbol string, bars []Bar, emaPeriod, rsiPeriod, a
 		return fmt.Errorf("Seed %s: EMA: %w", symbol, err)
 	}
 
+	// RSI on closes through the prior bar vs full series (needs one extra bar for RSIPrev).
+	if len(prices) < rsiPeriod+2 {
+		return fmt.Errorf("Seed %s: need at least %d bars for RSI+RSIPrev (rsiPeriod+2)", symbol, rsiPeriod+2)
+	}
+	rsiPrev, err := CalculateRSI(prices[:len(prices)-1], rsiPeriod)
+	if err != nil {
+		return fmt.Errorf("Seed %s: RSIPrev: %w", symbol, err)
+	}
 	rsi, err := CalculateRSI(prices, rsiPeriod)
 	if err != nil {
 		return fmt.Errorf("Seed %s: RSI: %w", symbol, err)
@@ -62,7 +75,7 @@ func (c *IndicatorCache) Seed(symbol string, bars []Bar, emaPeriod, rsiPeriod, a
 	}
 
 	c.mu.Lock()
-	c.state[symbol] = IndicatorState{EMA: ema, RSI: rsi, ATR: atr}
+	c.state[symbol] = IndicatorState{EMA: ema, RSI: rsi, RSIPrev: rsiPrev, ATR: atr}
 	c.mu.Unlock()
 
 	return nil

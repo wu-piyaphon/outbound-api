@@ -8,6 +8,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"github.com/wu-piyaphon/outbound-api/internal/indicator"
+	"github.com/wu-piyaphon/outbound-api/internal/model"
 	"github.com/wu-piyaphon/outbound-api/internal/sentiment"
 )
 
@@ -45,8 +46,18 @@ func newTestSignalService(hasOpenPos bool, indicators indicator.IndicatorState, 
 func conditionsMetState() indicator.IndicatorState {
 	return indicator.IndicatorState{
 		EMA: decimal.NewFromFloat(90), // price 100 > EMA 90 ✓
-		RSI: decimal.NewFromFloat(30), // RSI 30 < 35 ✓
+		RSI: decimal.NewFromFloat(30), // RSI 30 < 35 ✓ (v1 oversold)
 		ATR: decimal.NewFromFloat(2),
+	}
+}
+
+// previewCrossUpState satisfies v2 RSI layer: RSIPrev < 35 and RSI >= 35.
+func previewCrossUpState() indicator.IndicatorState {
+	return indicator.IndicatorState{
+		EMA:     decimal.NewFromFloat(90),
+		RSIPrev: decimal.NewFromFloat(30),
+		RSI:     decimal.NewFromFloat(36),
+		ATR:     decimal.NewFromFloat(2),
 	}
 }
 
@@ -143,6 +154,90 @@ func TestEvaluateBuySignal_AllLayersPass(t *testing.T) {
 	}
 	if signal.Indicators.EMA.IsZero() || signal.Indicators.RSI.IsZero() || signal.Indicators.ATR.IsZero() {
 		t.Error("expected non-zero indicators on the signal")
+	}
+}
+
+func TestEvaluateBuySignal_V1IgnoresRSIPrev_SimpleOversold(t *testing.T) {
+	// RSIPrev would fail v2 cross-up (not oversold yesterday); v1 only checks RSI < 35.
+	state := indicator.IndicatorState{
+		EMA:     decimal.NewFromFloat(90),
+		RSIPrev: decimal.NewFromFloat(40),
+		RSI:     decimal.NewFromFloat(30),
+		ATR:     decimal.NewFromFloat(2),
+	}
+	svc := newTestSignalService(false, state, true, true)
+
+	signal, err := svc.EvaluateBuySignal(context.Background(), "AAPL", testPrice)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if signal == nil {
+		t.Fatal("expected v1 signal when RSI alone is oversold regardless of RSIPrev")
+	}
+}
+
+func TestPreviewBuySignal_RSICrossUp_Passes(t *testing.T) {
+	svc := newTestSignalService(false, previewCrossUpState(), true, true)
+
+	sig, err := svc.PreviewBuySignal(context.Background(), "AAPL", testPrice)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil {
+		t.Fatal("expected shadow signal when RSI cross-up and other layers pass")
+	}
+	if sig.Mode != model.SignalModeShadow {
+		t.Errorf("expected shadow mode, got %q", sig.Mode)
+	}
+}
+
+func TestPreviewBuySignal_RSIPrevNotOversold_Blocks(t *testing.T) {
+	state := indicator.IndicatorState{
+		EMA:     decimal.NewFromFloat(90),
+		RSIPrev: decimal.NewFromFloat(40), // not oversold yesterday
+		RSI:     decimal.NewFromFloat(36),
+		ATR:     decimal.NewFromFloat(2),
+	}
+	svc := newTestSignalService(false, state, true, true)
+
+	sig, err := svc.PreviewBuySignal(context.Background(), "AAPL", testPrice)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig != nil {
+		t.Fatalf("expected nil when RSIPrev >= 35, got %+v", sig)
+	}
+}
+
+func TestPreviewBuySignal_StillOversold_Blocks(t *testing.T) {
+	state := indicator.IndicatorState{
+		EMA:     decimal.NewFromFloat(90),
+		RSIPrev: decimal.NewFromFloat(30),
+		RSI:     decimal.NewFromFloat(32), // still below 35 today
+		ATR:     decimal.NewFromFloat(2),
+	}
+	svc := newTestSignalService(false, state, true, true)
+
+	sig, err := svc.PreviewBuySignal(context.Background(), "AAPL", testPrice)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig != nil {
+		t.Fatal("expected nil when RSI has not crossed back to >= 35")
+	}
+}
+
+func TestPreviewBuySignal_V1OversoldWithoutCross_BlocksV2(t *testing.T) {
+	// Same RSI setup as v1 "all pass" but RSIPrev unset/zero — RSIPrev < 35 holds,
+	// yet RSI >= 35 fails for conditionsMetState (RSI=30).
+	svc := newTestSignalService(false, conditionsMetState(), true, true)
+
+	sig, err := svc.PreviewBuySignal(context.Background(), "AAPL", testPrice)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig != nil {
+		t.Fatal("expected nil for v2 when RSI still below 35 (no cross-up)")
 	}
 }
 

@@ -168,7 +168,8 @@ func (s *signalService) PreviewBuySignal(ctx context.Context, symbol string, cur
 		return nil, nil
 	}
 
-	if !state.RSI.LessThan(decimal.NewFromInt(35)) {
+	// Layer 2 (v2): RSI cross-up — prior bar was oversold (RSIPrev < 35), current RSI >= 35.
+	if !state.RSIPrev.LessThan(decimal.NewFromInt(35)) || !state.RSI.GreaterThanOrEqual(decimal.NewFromInt(35)) {
 		return nil, nil
 	}
 
@@ -181,8 +182,8 @@ func (s *signalService) PreviewBuySignal(ctx context.Context, symbol string, cur
 	}
 
 	reasoning := fmt.Sprintf(
-		"[shadow] Trend+Momentum+Sentiment confirmed. Price: %v, EMA200: %v, RSI14: %v, ATR14: %v. Sentiment: %s",
-		currentPrice, state.EMA, state.RSI, state.ATR, sentimentResult.Reasoning,
+		"[shadow] Trend+RSI-cross-up+Sentiment confirmed. Price: %v, EMA200: %v, RSI14(prev→now): %v→%v, ATR14: %v. Sentiment: %s",
+		currentPrice, state.EMA, state.RSIPrev, state.RSI, state.ATR, sentimentResult.Reasoning,
 	)
 
 	return &model.Signal{
