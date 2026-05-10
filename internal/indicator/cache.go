@@ -13,7 +13,7 @@ import (
 //
 // RSIPrev is RSI computed from bars excluding the latest close (yesterday's
 // RSI); RSI uses the full series including the latest close (today). Together
-// they enable RSI cross-up detection (v2 shadow path).
+// they enable RSI cross-up detection for shadow preview.
 type IndicatorState struct {
 	EMA     decimal.Decimal
 	RSI     decimal.Decimal

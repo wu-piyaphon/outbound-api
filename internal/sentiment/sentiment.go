@@ -24,7 +24,7 @@ type Provider interface {
 }
 
 // ArticleAnalyzer scores a pre-fetched set of news articles for a given symbol.
-// Implementations include the keyword scorer (v1) and the LLM scorer (v2).
+// Implementations include the keyword scorer (live path) and the LLM scorer (shadow path).
 type ArticleAnalyzer interface {
 	Analyze(ctx context.Context, symbol string, articles []marketdata.News) (*Result, error)
 }
@@ -80,7 +80,7 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 }
 
 // ---------------------------------------------------------------------------
-// Keyword analyzer — used by the v1 live path.
+// Keyword analyzer — used by the live execution path.
 // ---------------------------------------------------------------------------
 
 var positiveKeywords = []string{
@@ -100,7 +100,7 @@ var negativeKeywords = []string{
 type keywordAnalyzer struct{}
 
 // NewKeywordAnalyzer returns an ArticleAnalyzer that scores articles using
-// positive/negative keyword counts. Used by the v1 live strategy path.
+// positive/negative keyword counts. Used by the live trading path.
 func NewKeywordAnalyzer() ArticleAnalyzer {
 	return &keywordAnalyzer{}
 }

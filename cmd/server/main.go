@@ -192,37 +192,32 @@ func main() {
 	regimeCache := indicator.NewRegimeCache()
 	seedRegime(cfg.RegimeSymbol, marketDataClient, regimeCache, cfg.RegimeEMAPeriod)
 
-	// v1 sentiment: keyword scorer — same behaviour as before PR 1.
-	v1SentimentProvider := sentiment.NewCachedProvider(
+	// Live path uses keyword sentiment; shadow path uses LLM sentiment via duplicate SignalService.
+	liveSentimentProvider := sentiment.NewCachedProvider(
 		sentiment.NewAlpacaNewsProvider(marketDataClient, sentiment.NewKeywordAnalyzer(), 0),
 		5*time.Minute,
 	)
 
-	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, v1SentimentProvider)
+	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, liveSentimentProvider)
 	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier, cfg.CommissionFeePct, cfg.FXFeePct)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
-	v1 := strategy.NewV1Coordinator(signalService, tradeService, accountTransferService)
-	var coordinator strategy.Coordinator
-	if cfg.Strategy == config.StrategyV2 {
-		// v2 shadow path uses the DeepSeek LLM for sentiment analysis.
-		llmAnalyzer := sentiment.NewLLMAnalyzer(cfg.SentimentAPIBaseURL, cfg.SentimentAPIKey, cfg.SentimentModel)
-		v2SentimentProvider := sentiment.NewCachedProvider(
-			sentiment.NewAlpacaNewsProvider(marketDataClient, llmAnalyzer, cfg.SentimentMinArticles),
-			5*time.Minute,
-		)
-		shadowSignalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, v2SentimentProvider)
-		shadowRepo := repository.NewShadowRepository(pool)
-		coordinator = strategy.NewV2Coordinator(v1, shadowSignalService, tradeRepo, shadowRepo, regimeCache, transactor, strategy.AdaptiveExitParams{
-			BreakEvenATRTrigger: cfg.BreakEvenATRTrigger,
-			TrailATRTrigger:     cfg.TrailATRTrigger,
-			TrailATRDistance:    cfg.TrailATRDistance,
-		})
-		slog.Info("strategy coordinator: v2 (dual-execute, shadow path uses LLM sentiment + regime filter)")
-	} else {
-		coordinator = v1
-		slog.Info("strategy coordinator: v1 (live path only, keyword sentiment)")
-	}
+	liveCoordinator := strategy.NewLiveCoordinator(signalService, tradeService, accountTransferService)
+
+	llmAnalyzer := sentiment.NewLLMAnalyzer(cfg.SentimentAPIBaseURL, cfg.SentimentAPIKey, cfg.SentimentModel)
+	shadowSentimentProvider := sentiment.NewCachedProvider(
+		sentiment.NewAlpacaNewsProvider(marketDataClient, llmAnalyzer, cfg.SentimentMinArticles),
+		5*time.Minute,
+	)
+	shadowSignalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, shadowSentimentProvider)
+	shadowRepo := repository.NewShadowRepository(pool)
+
+	coordinator := strategy.NewTradingCoordinator(liveCoordinator, shadowSignalService, tradeRepo, shadowRepo, regimeCache, transactor, strategy.AdaptiveExitParams{
+		BreakEvenATRTrigger: cfg.BreakEvenATRTrigger,
+		TrailATRTrigger:     cfg.TrailATRTrigger,
+		TrailATRDistance:    cfg.TrailATRDistance,
+	})
+	slog.Info("bar coordinator: shadow path + live execution")
 
 	initialBotState := bot.StateRunning
 	if !cfg.BotAutoStart {

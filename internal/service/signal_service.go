@@ -168,7 +168,7 @@ func (s *signalService) PreviewBuySignal(ctx context.Context, symbol string, cur
 		return nil, nil
 	}
 
-	// Layer 2 (v2): RSI cross-up — prior bar was oversold (RSIPrev < 35), current RSI >= 35.
+	// Layer 2 (shadow preview): RSI cross-up — prior bar was oversold (RSIPrev < 35), current RSI >= 35.
 	if !state.RSIPrev.LessThan(decimal.NewFromInt(35)) || !state.RSI.GreaterThanOrEqual(decimal.NewFromInt(35)) {
 		return nil, nil
 	}

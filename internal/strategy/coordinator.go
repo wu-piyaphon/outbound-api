@@ -1,7 +1,7 @@
-// Package strategy provides the Coordinator abstraction that fans bar events
-// to one or more strategy paths. The live (v1) path drives real orders; the
-// shadow (v2) path runs in parallel and writes observations for comparison
-// without affecting broker state.
+// Package strategy provides the Coordinator abstraction for bar evaluation.
+// TradingCoordinator is the default implementation: shadow observation (LLM,
+// regime, adaptive exits) plus LiveCoordinator for broker-backed execution with
+// keyword sentiment on buys.
 package strategy
 
 import (

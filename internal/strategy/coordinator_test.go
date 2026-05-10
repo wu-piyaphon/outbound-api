@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	alpacaSDK "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	alpacaSDK "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
@@ -31,17 +31,18 @@ func testAdaptiveParams() AdaptiveExitParams {
 		TrailATRDistance:    decimal.NewFromFloat(2.0),
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
 type mockSignalService struct {
-	evaluateResult  *model.Signal
-	evaluateErr     error
-	previewResult   *model.Signal
-	previewErr      error
-	evaluateCalls   int
-	previewCalls    int
+	evaluateResult *model.Signal
+	evaluateErr    error
+	previewResult  *model.Signal
+	previewErr     error
+	evaluateCalls  int
+	previewCalls   int
 }
 
 func (m *mockSignalService) GetAllSignals(_ context.Context) ([]model.Signal, error) {
@@ -63,11 +64,11 @@ func (m *mockSignalService) PreviewBuySignal(_ context.Context, _ string, _ deci
 }
 
 type mockTradeService struct {
-	exitErr     error
-	buyResult   *model.Trade
-	buyErr      error
-	exitCalls   int
-	buyCalls    int
+	exitErr   error
+	buyResult *model.Trade
+	buyErr    error
+	exitCalls int
+	buyCalls  int
 }
 
 func (m *mockTradeService) ExecuteBuyTrade(_ context.Context, _ *model.Signal, _ *model.AccountTransfer) (*model.Trade, error) {
@@ -110,9 +111,9 @@ type mockTradeRepo struct {
 	openErr    error
 }
 
-func (m *mockTradeRepo) Create(_ context.Context, _ model.Trade) error        { return nil }
-func (m *mockTradeRepo) Update(_ context.Context, _ model.Trade) error        { return nil }
-func (m *mockTradeRepo) Delete(_ context.Context, _ uuid.UUID) error          { return nil }
+func (m *mockTradeRepo) Create(_ context.Context, _ model.Trade) error { return nil }
+func (m *mockTradeRepo) Update(_ context.Context, _ model.Trade) error { return nil }
+func (m *mockTradeRepo) Delete(_ context.Context, _ uuid.UUID) error   { return nil }
 func (m *mockTradeRepo) HasOpenPosition(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -124,10 +125,10 @@ func (m *mockTradeRepo) GetOpenBuyTradesBySymbol(_ context.Context, _ string) ([
 }
 
 type mockShadowRepo struct {
-	signalLogs  []*model.Signal
-	exitLogs    []*model.ShadowExitDecision
-	signalErr   error
-	exitErr     error
+	signalLogs []*model.Signal
+	exitLogs   []*model.ShadowExitDecision
+	signalErr  error
+	exitErr    error
 }
 
 func (m *mockShadowRepo) LogShadowSignal(_ context.Context, sig *model.Signal) error {
@@ -177,17 +178,17 @@ func newSignal() *model.Signal {
 }
 
 // ---------------------------------------------------------------------------
-// V1Coordinator tests
+// LiveCoordinator tests
 // ---------------------------------------------------------------------------
 
-func TestV1_EvaluateBar_NoSignal(t *testing.T) {
+func TestLiveCoordinator_EvaluateBar_NoSignal(t *testing.T) {
 	sigSvc := &mockSignalService{evaluateResult: nil}
 	tradeSvc := &mockTradeService{}
 	atSvc := &mockAccountTransferService{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
 
-	if err := v1.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := live.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -202,15 +203,15 @@ func TestV1_EvaluateBar_NoSignal(t *testing.T) {
 	}
 }
 
-func TestV1_EvaluateBar_SignalFires_ExecutesBuy(t *testing.T) {
+func TestLiveCoordinator_EvaluateBar_SignalFires_ExecutesBuy(t *testing.T) {
 	sig := newSignal()
 	sigSvc := &mockSignalService{evaluateResult: sig}
 	tradeSvc := &mockTradeService{}
 	atSvc := &mockAccountTransferService{budget: newBudget()}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
 
-	if err := v1.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := live.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -219,15 +220,15 @@ func TestV1_EvaluateBar_SignalFires_ExecutesBuy(t *testing.T) {
 	}
 }
 
-func TestV1_EvaluateBar_NoBudget_SkipsBuy(t *testing.T) {
+func TestLiveCoordinator_EvaluateBar_NoBudget_SkipsBuy(t *testing.T) {
 	sig := newSignal()
 	sigSvc := &mockSignalService{evaluateResult: sig}
 	tradeSvc := &mockTradeService{}
 	atSvc := &mockAccountTransferService{budget: nil}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
 
-	if err := v1.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := live.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -236,14 +237,14 @@ func TestV1_EvaluateBar_NoBudget_SkipsBuy(t *testing.T) {
 	}
 }
 
-func TestV1_EvaluateBar_ExitError_ReturnsError(t *testing.T) {
+func TestLiveCoordinator_EvaluateBar_ExitError_ReturnsError(t *testing.T) {
 	sigSvc := &mockSignalService{}
 	tradeSvc := &mockTradeService{exitErr: errors.New("db error")}
 	atSvc := &mockAccountTransferService{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
 
-	err := v1.EvaluateBar(context.Background(), testEvent)
+	err := live.EvaluateBar(context.Background(), testEvent)
 	if err == nil {
 		t.Fatal("expected error from exit evaluation, got nil")
 	}
@@ -254,10 +255,10 @@ func TestV1_EvaluateBar_ExitError_ReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// V2Coordinator tests
+// TradingCoordinator tests
 // ---------------------------------------------------------------------------
 
-func TestV2_EvaluateBar_V1PathUnchanged(t *testing.T) {
+func TestTradingCoordinator_EvaluateBar_LivePathUnchanged(t *testing.T) {
 	sig := newSignal()
 	sigSvc := &mockSignalService{evaluateResult: sig}
 	tradeSvc := &mockTradeService{}
@@ -265,30 +266,30 @@ func TestV2_EvaluateBar_V1PathUnchanged(t *testing.T) {
 	tradeRepo := &mockTradeRepo{}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// v1 live path must have run.
+	// Live execution path must have run.
 	if tradeSvc.exitCalls != 1 {
-		t.Errorf("v1 exit evaluation should run once, got %d", tradeSvc.exitCalls)
+		t.Errorf("live exit evaluation should run once, got %d", tradeSvc.exitCalls)
 	}
 	if tradeSvc.buyCalls != 1 {
-		t.Errorf("v1 buy execution should run once, got %d", tradeSvc.buyCalls)
+		t.Errorf("live buy execution should run once, got %d", tradeSvc.buyCalls)
 	}
 }
 
-func TestV2_EvaluateBar_ShadowBuySignalLogged(t *testing.T) {
+func TestTradingCoordinator_EvaluateBar_ShadowBuySignalLogged(t *testing.T) {
 	shadowSig := &model.Signal{
 		ID:     uuid.New(),
 		Symbol: "AAPL",
 		Mode:   model.SignalModeShadow,
 	}
 	sigSvc := &mockSignalService{
-		// v1 live path returns nil (no live buy); shadow preview returns a signal.
+		// Live path returns nil (no live buy); shadow preview returns a signal.
 		evaluateResult: nil,
 		previewResult:  shadowSig,
 	}
@@ -297,10 +298,10 @@ func TestV2_EvaluateBar_ShadowBuySignalLogged(t *testing.T) {
 	tradeRepo := &mockTradeRepo{}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -315,7 +316,7 @@ func TestV2_EvaluateBar_ShadowBuySignalLogged(t *testing.T) {
 	}
 }
 
-func TestV2_EvaluateBar_ShadowExitDecisionLogged(t *testing.T) {
+func TestTradingCoordinator_EvaluateBar_ShadowExitDecisionLogged(t *testing.T) {
 	stopLoss := decimal.NewFromInt(140)
 	openTrade := &model.Trade{
 		ID:       uuid.New(),
@@ -329,11 +330,11 @@ func TestV2_EvaluateBar_ShadowExitDecisionLogged(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openTrades: []*model.Trade{openTrade}}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
 	// Price 150 is above stop (140) — no exit triggered.
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(shadowRepo.exitLogs) != 0 {
@@ -342,7 +343,7 @@ func TestV2_EvaluateBar_ShadowExitDecisionLogged(t *testing.T) {
 
 	// Price below stop — exit should be logged.
 	belowStopEvent := BarEvent{Symbol: "AAPL", Price: decimal.NewFromInt(130), BarTime: time.Now().UTC()}
-	if err := v2.EvaluateBar(context.Background(), belowStopEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), belowStopEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(shadowRepo.exitLogs) != 1 {
@@ -353,7 +354,7 @@ func TestV2_EvaluateBar_ShadowExitDecisionLogged(t *testing.T) {
 	}
 }
 
-func TestV2_EvaluateBar_ShadowTakeProfitLogged(t *testing.T) {
+func TestTradingCoordinator_EvaluateBar_ShadowTakeProfitLogged(t *testing.T) {
 	takeProfit := decimal.NewFromInt(145)
 	openTrade := &model.Trade{
 		ID:         uuid.New(),
@@ -367,11 +368,11 @@ func TestV2_EvaluateBar_ShadowTakeProfitLogged(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openTrades: []*model.Trade{openTrade}}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
 	// Price 150 >= take-profit 145 — exit_take_profit should be logged.
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(shadowRepo.exitLogs) != 1 {
@@ -382,7 +383,7 @@ func TestV2_EvaluateBar_ShadowTakeProfitLogged(t *testing.T) {
 	}
 }
 
-func TestV2_EvaluateBar_ShadowFailures_DoNotBlockLivePath(t *testing.T) {
+func TestTradingCoordinator_EvaluateBar_ShadowFailures_DoNotBlockLivePath(t *testing.T) {
 	sig := newSignal()
 	sigSvc := &mockSignalService{
 		evaluateResult: sig,
@@ -393,23 +394,23 @@ func TestV2_EvaluateBar_ShadowFailures_DoNotBlockLivePath(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openErr: errors.New("db error")}
 	shadowRepo := &mockShadowRepo{signalErr: errors.New("insert failed")}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
 	// All shadow paths fail — live path must still succeed.
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("live path should not fail on shadow errors, got: %v", err)
 	}
 
 	if tradeSvc.exitCalls != 1 {
-		t.Errorf("v1 exit calls expected 1, got %d", tradeSvc.exitCalls)
+		t.Errorf("live exit calls expected 1, got %d", tradeSvc.exitCalls)
 	}
 	if tradeSvc.buyCalls != 1 {
-		t.Errorf("v1 buy calls expected 1, got %d", tradeSvc.buyCalls)
+		t.Errorf("live buy calls expected 1, got %d", tradeSvc.buyCalls)
 	}
 }
 
-func TestV2_EvaluateBar_HoldNotLogged(t *testing.T) {
+func TestTradingCoordinator_EvaluateBar_HoldNotLogged(t *testing.T) {
 	// Trade has stop at 100, take-profit at 200. Price 150 is between — hold.
 	stopLoss := decimal.NewFromInt(100)
 	takeProfit := decimal.NewFromInt(200)
@@ -426,10 +427,10 @@ func TestV2_EvaluateBar_HoldNotLogged(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openTrades: []*model.Trade{openTrade}}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -442,18 +443,18 @@ func TestV2_EvaluateBar_HoldNotLogged(t *testing.T) {
 // Regime gate tests
 // ---------------------------------------------------------------------------
 
-func TestV2_RegimeOff_SkipsPreviewAndLogsRegimeOff(t *testing.T) {
+func TestTradingCoordinator_RegimeOff_SkipsPreviewAndLogsRegimeOff(t *testing.T) {
 	sigSvc := &mockSignalService{previewResult: newSignal()}
 	tradeSvc := &mockTradeService{}
 	atSvc := &mockAccountTransferService{}
 	tradeRepo := &mockTradeRepo{}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
 	// regime OFF
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false}, noopTransactor{}, testAdaptiveParams())
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false}, noopTransactor{}, testAdaptiveParams())
 
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -478,7 +479,7 @@ func TestV2_RegimeOff_SkipsPreviewAndLogsRegimeOff(t *testing.T) {
 	}
 }
 
-func TestV2_RegimeOff_LiveV1PathUnaffected(t *testing.T) {
+func TestTradingCoordinator_RegimeOff_LivePathUnaffected(t *testing.T) {
 	sig := newSignal()
 	sigSvc := &mockSignalService{evaluateResult: sig}
 	tradeSvc := &mockTradeService{}
@@ -486,23 +487,23 @@ func TestV2_RegimeOff_LiveV1PathUnaffected(t *testing.T) {
 	tradeRepo := &mockTradeRepo{}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false}, noopTransactor{}, testAdaptiveParams())
 
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// v1 must still run its full path regardless of regime state.
+	// Live path must still run its full path regardless of regime state.
 	if tradeSvc.exitCalls != 1 {
-		t.Errorf("v1 exit evaluation must run even when regime is off, got %d calls", tradeSvc.exitCalls)
+		t.Errorf("live exit evaluation must run even when regime is off, got %d calls", tradeSvc.exitCalls)
 	}
 	if tradeSvc.buyCalls != 1 {
-		t.Errorf("v1 buy execution must run even when regime is off, got %d calls", tradeSvc.buyCalls)
+		t.Errorf("live buy execution must run even when regime is off, got %d calls", tradeSvc.buyCalls)
 	}
 }
 
-func TestV2_RegimeOn_CallsPreviewNormally(t *testing.T) {
+func TestTradingCoordinator_RegimeOn_CallsPreviewNormally(t *testing.T) {
 	shadowSig := &model.Signal{
 		ID:     uuid.New(),
 		Symbol: "AAPL",
@@ -517,11 +518,11 @@ func TestV2_RegimeOn_CallsPreviewNormally(t *testing.T) {
 	tradeRepo := &mockTradeRepo{}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
 	// regime ON
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -537,7 +538,7 @@ func TestV2_RegimeOn_CallsPreviewNormally(t *testing.T) {
 	}
 }
 
-func TestV2_RegimeOff_ShadowLogFailure_DoesNotBlockLivePath(t *testing.T) {
+func TestTradingCoordinator_RegimeOff_ShadowLogFailure_DoesNotBlockLivePath(t *testing.T) {
 	sig := newSignal()
 	sigSvc := &mockSignalService{evaluateResult: sig}
 	tradeSvc := &mockTradeService{}
@@ -545,19 +546,19 @@ func TestV2_RegimeOff_ShadowLogFailure_DoesNotBlockLivePath(t *testing.T) {
 	tradeRepo := &mockTradeRepo{}
 	shadowRepo := &mockShadowRepo{signalErr: errors.New("db full")}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false}, noopTransactor{}, testAdaptiveParams())
 
 	// Shadow log fails, but live path must still complete without error.
-	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+	if err := trading.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("live path must not fail on shadow log error, got: %v", err)
 	}
 	if tradeSvc.buyCalls != 1 {
-		t.Errorf("v1 buy must still run despite shadow log error, got %d calls", tradeSvc.buyCalls)
+		t.Errorf("live buy must still run despite shadow log error, got %d calls", tradeSvc.buyCalls)
 	}
 }
 
-func TestV2_AdaptiveStopMovedWhileV1Holds(t *testing.T) {
+func TestTradingCoordinator_AdaptiveStopMovedWhileLiveHoldsStaticStop(t *testing.T) {
 	entry := decimal.NewFromInt(100)
 	stop := decimal.NewFromInt(95)
 	atr := decimal.NewFromInt(2)
@@ -579,11 +580,11 @@ func TestV2_AdaptiveStopMovedWhileV1Holds(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openTrades: []*model.Trade{openTrade}}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
 	ev := BarEvent{Symbol: "AAPL", Price: decimal.NewFromInt(103), BarTime: time.Now().UTC()}
-	if err := v2.EvaluateBar(context.Background(), ev); err != nil {
+	if err := trading.EvaluateBar(context.Background(), ev); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -595,7 +596,7 @@ func TestV2_AdaptiveStopMovedWhileV1Holds(t *testing.T) {
 	}
 }
 
-func TestV2_AdaptiveExitWhileV1Holds(t *testing.T) {
+func TestTradingCoordinator_AdaptiveExitWhileLiveHoldsStaticStop(t *testing.T) {
 	entry := decimal.NewFromInt(100)
 	stop := decimal.NewFromInt(95)
 	atr := decimal.NewFromInt(2)
@@ -619,11 +620,11 @@ func TestV2_AdaptiveExitWhileV1Holds(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openTrades: []*model.Trade{openTrade}}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
 	ev := BarEvent{Symbol: "AAPL", Price: decimal.NewFromInt(98), BarTime: time.Now().UTC()}
-	if err := v2.EvaluateBar(context.Background(), ev); err != nil {
+	if err := trading.EvaluateBar(context.Background(), ev); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -638,7 +639,7 @@ func TestV2_AdaptiveExitWhileV1Holds(t *testing.T) {
 	}
 }
 
-func TestV2_AdaptiveNoShadowComparisonWhenV1StopHit(t *testing.T) {
+func TestTradingCoordinator_AdaptiveNoShadowComparisonWhenLiveStopHit(t *testing.T) {
 	entry := decimal.NewFromInt(100)
 	stop := decimal.NewFromInt(95)
 	atr := decimal.NewFromInt(2)
@@ -660,15 +661,15 @@ func TestV2_AdaptiveNoShadowComparisonWhenV1StopHit(t *testing.T) {
 	tradeRepo := &mockTradeRepo{openTrades: []*model.Trade{openTrade}}
 	shadowRepo := &mockShadowRepo{}
 
-	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
+	live := NewLiveCoordinator(sigSvc, tradeSvc, atSvc)
+	trading := NewTradingCoordinator(live, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true}, noopTransactor{}, testAdaptiveParams())
 
 	ev := BarEvent{Symbol: "AAPL", Price: decimal.NewFromInt(94), BarTime: time.Now().UTC()}
-	if err := v2.EvaluateBar(context.Background(), ev); err != nil {
+	if err := trading.EvaluateBar(context.Background(), ev); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if len(shadowRepo.exitLogs) != 0 {
-		t.Fatalf("expected no adaptive comparison log when v1 stop already hit, got %d logs", len(shadowRepo.exitLogs))
+		t.Fatalf("expected no adaptive comparison log when live stop already hit, got %d logs", len(shadowRepo.exitLogs))
 	}
 }

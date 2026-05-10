@@ -4,7 +4,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// AdaptiveExitParams configures ATR-based shadow exits compared against v1
+// AdaptiveExitParams configures ATR-based shadow exits compared against live
 // static stop-loss / take-profit levels.
 type AdaptiveExitParams struct {
 	BreakEvenATRTrigger decimal.Decimal
@@ -14,7 +14,7 @@ type AdaptiveExitParams struct {
 
 // ComputeAdaptiveEffectiveStop returns the tightened stop implied by peak price,
 // entry, entry-time ATR, and profit tiers. Long-only: higher stop prices are
-// tighter (closer to locking profit). Starts from dbStop (v1 static stop).
+// tighter (closer to locking profit). Starts from dbStop (live static stop).
 func ComputeAdaptiveEffectiveStop(peak, entry, entryATR, dbStop decimal.Decimal, p AdaptiveExitParams) decimal.Decimal {
 	eff := dbStop
 	if entryATR.IsZero() {

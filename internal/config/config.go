@@ -7,17 +7,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// StrategyMode selects which coordinator runs bar events.
-type StrategyMode string
-
-const (
-	// StrategyV1 runs only the live strategy path (default).
-	StrategyV1 StrategyMode = "v1"
-	// StrategyV2 dual-executes: live path (v1) plus a shadow path that writes
-	// to shadow_exit_decisions and signals (mode='shadow') for comparison.
-	StrategyV2 StrategyMode = "v2"
-)
-
 type Config struct {
 	AlpacaAPIKey    string
 	AlpacaAPISecret string
@@ -32,11 +21,7 @@ type Config struct {
 	// Set via BOT_API_KEY env var.
 	BotAPIKey string
 
-	// Strategy selects the coordinator mode. Defaults to "v1" (live path only).
-	// Set to "v2" to enable dual-execution with shadow logging.
-	Strategy StrategyMode
-
-	// Sentiment LLM settings — required when Strategy=v2.
+	// Sentiment LLM settings — shadow buy path uses DeepSeek (OpenAI-compatible API).
 	//
 	// SentimentAPIBaseURL is the OpenAI-compatible base URL (no trailing slash).
 	// Default: https://api.deepseek.com. Set via SENTIMENT_API_BASE_URL.
@@ -53,7 +38,7 @@ type Config struct {
 	// Default: 3. Set via SENTIMENT_MIN_ARTICLES.
 	SentimentMinArticles int
 
-	// Regime filter settings — used by the v2 shadow path.
+	// Regime filter settings — shadow buy gate (index vs EMA).
 	//
 	// RegimeSymbol is the index ticker used for the market regime filter.
 	// Default: SPY. Set via REGIME_SYMBOL.
@@ -87,7 +72,7 @@ type Config struct {
 	// Set via FX_FEE_PCT env var.
 	FXFeePct decimal.Decimal
 
-	// Adaptive shadow exit (ATR-based trailing / break-even) — v2 comparison vs v1 static stops.
+	// Adaptive shadow exit (ATR-based trailing / break-even) — shadow comparison vs static live stops.
 	// BREAK_EVEN_ATR_TRIGGER default 1.0 — profit in ATR units to lift stop to entry.
 	BreakEvenATRTrigger decimal.Decimal
 	// TRAIL_ATR_TRIGGER default 1.5 — profit in ATR units to enable trailing stop.
@@ -97,11 +82,6 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	strategy := StrategyMode(os.Getenv("STRATEGY"))
-	if strategy == "" {
-		strategy = StrategyV1
-	}
-
 	sentimentAPIBaseURL := os.Getenv("SENTIMENT_API_BASE_URL")
 	if sentimentAPIBaseURL == "" {
 		sentimentAPIBaseURL = "https://api.deepseek.com"
@@ -138,7 +118,6 @@ func Load() (*Config, error) {
 		Port:                 os.Getenv("PORT"),
 		BotAutoStart:         os.Getenv("BOT_AUTOSTART") != "false",
 		BotAPIKey:            os.Getenv("BOT_API_KEY"),
-		Strategy:             strategy,
 		SentimentAPIBaseURL:  sentimentAPIBaseURL,
 		SentimentAPIKey:      os.Getenv("SENTIMENT_API_KEY"),
 		SentimentModel:       sentimentModel,
@@ -248,11 +227,8 @@ func (c *Config) validate() error {
 	if c.BotAPIKey == "" {
 		return fmt.Errorf("BOT_API_KEY is required")
 	}
-	if c.Strategy != StrategyV1 && c.Strategy != StrategyV2 {
-		return fmt.Errorf("STRATEGY must be 'v1' or 'v2', got %q", c.Strategy)
-	}
-	if c.Strategy == StrategyV2 && c.SentimentAPIKey == "" {
-		return fmt.Errorf("SENTIMENT_API_KEY is required when STRATEGY=v2")
+	if c.SentimentAPIKey == "" {
+		return fmt.Errorf("SENTIMENT_API_KEY is required")
 	}
 	return nil
 }

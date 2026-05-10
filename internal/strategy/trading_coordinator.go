@@ -14,25 +14,26 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/service"
 )
 
-// V2Coordinator dual-executes bar events: the live v1 path runs unchanged,
-// and a shadow path records what the strategy would have done for offline
-// comparison.
+// TradingCoordinator is the default bar coordinator: it runs the shadow path
+// first (adaptive exit comparison, regime-gated LLM buy preview and logging),
+// then delegates to LiveCoordinator for broker-backed exits and keyword-sentiment
+// buys.
 //
 // The shadow buy gate applies the regime filter (SPY > EMA-50) before running
-// the signal evaluation. When the regime is off a shadow signal is logged with
-// reasoning="regime_off" so the suppression is visible in the signals table.
+// PreviewBuySignal. When the regime is off a shadow signal is logged with
+// reasoning="regime_off".
 //
 // Shadow exits apply adaptive ATR trailing / break-even in a DB transaction,
-// update peak_price on open buys, and record ShadowExitDecision rows whenever
-// v2 would tighten stops or exit while v1 still holds (static stop / TP).
+// update peak_price on open buys, and record ShadowExitDecision rows when the
+// adaptive effective stop tightens or would exit while static stop / TP still
+// holds (live path unchanged).
 //
-// shadowSignalSvc uses a different sentiment provider (LLM) than the v1
-// signalService, so the two paths are independently observable.
+// shadowSignalSvc uses LLM sentiment; LiveCoordinator uses keyword sentiment.
 //
 // Shadow writes are best-effort at the coordinator boundary: transaction
 // failures are logged but never abort the live path.
-type V2Coordinator struct {
-	v1              *V1Coordinator
+type TradingCoordinator struct {
+	live            *LiveCoordinator
 	shadowSignalSvc service.SignalService
 	tradeRepo       repository.TradeRepository
 	shadowRepo      repository.ShadowRepository
@@ -41,20 +42,18 @@ type V2Coordinator struct {
 	adaptive        AdaptiveExitParams
 }
 
-// NewV2Coordinator constructs a V2Coordinator. The v1 coordinator handles the
-// live path; shadowSignalSvc (wired with LLM sentiment), tradeRepo, shadowRepo,
-// regime, transactor, and adaptive params power the shadow path.
-func NewV2Coordinator(
-	v1 *V1Coordinator,
+// NewTradingCoordinator constructs a TradingCoordinator.
+func NewTradingCoordinator(
+	live *LiveCoordinator,
 	shadowSignalSvc service.SignalService,
 	tradeRepo repository.TradeRepository,
 	shadowRepo repository.ShadowRepository,
 	regime indicator.RegimeReader,
 	transactor repository.Transactor,
 	adaptive AdaptiveExitParams,
-) *V2Coordinator {
-	return &V2Coordinator{
-		v1:              v1,
+) *TradingCoordinator {
+	return &TradingCoordinator{
+		live:            live,
 		shadowSignalSvc: shadowSignalSvc,
 		tradeRepo:       tradeRepo,
 		shadowRepo:      shadowRepo,
@@ -64,13 +63,13 @@ func NewV2Coordinator(
 	}
 }
 
-// EvaluateBar runs the shadow observation pass first (so it sees the same DB
-// state as v1), then delegates to the live v1 path.
-func (c *V2Coordinator) EvaluateBar(ctx context.Context, event BarEvent) error {
+// EvaluateBar runs the shadow observation pass first (same DB snapshot as live),
+// then delegates to the live path.
+func (c *TradingCoordinator) EvaluateBar(ctx context.Context, event BarEvent) error {
 	c.shadowEvaluateExits(ctx, event)
 	c.shadowEvaluateBuySignal(ctx, event)
 
-	return c.v1.EvaluateBar(ctx, event)
+	return c.live.EvaluateBar(ctx, event)
 }
 
 func tradeEntryPrice(trade *model.Trade) *decimal.Decimal {
@@ -81,9 +80,9 @@ func tradeEntryPrice(trade *model.Trade) *decimal.Decimal {
 }
 
 // shadowEvaluateExits applies adaptive peak tracking and stop tightening in a
-// single transaction, then logs comparison rows when v2 diverges from v1
-// while v1 still holds.
-func (c *V2Coordinator) shadowEvaluateExits(ctx context.Context, event BarEvent) {
+// single transaction, then logs comparison rows when the adaptive path diverges
+// from static stops while the live position still holds.
+func (c *TradingCoordinator) shadowEvaluateExits(ctx context.Context, event BarEvent) {
 	err := c.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
 		openTrades, err := c.tradeRepo.GetOpenBuyTradesBySymbol(txCtx, event.Symbol)
 		if err != nil {
@@ -101,7 +100,7 @@ func (c *V2Coordinator) shadowEvaluateExits(ctx context.Context, event BarEvent)
 	}
 }
 
-func (c *V2Coordinator) shadowEvaluateOneTrade(txCtx context.Context, trade *model.Trade, event BarEvent) error {
+func (c *TradingCoordinator) shadowEvaluateOneTrade(txCtx context.Context, trade *model.Trade, event BarEvent) error {
 	entryPx := tradeEntryPrice(trade)
 
 	if trade.EntryATR != nil && !trade.EntryATR.IsZero() {
@@ -114,7 +113,7 @@ func (c *V2Coordinator) shadowEvaluateOneTrade(txCtx context.Context, trade *mod
 	return c.shadowLegacyExit(txCtx, trade, event)
 }
 
-func (c *V2Coordinator) shadowAdaptiveExit(txCtx context.Context, trade *model.Trade, event BarEvent, entry decimal.Decimal) error {
+func (c *TradingCoordinator) shadowAdaptiveExit(txCtx context.Context, trade *model.Trade, event BarEvent, entry decimal.Decimal) error {
 	oldPeak := entry
 	if trade.PeakPrice != nil {
 		oldPeak = *trade.PeakPrice
@@ -127,9 +126,9 @@ func (c *V2Coordinator) shadowAdaptiveExit(txCtx context.Context, trade *model.T
 	oldEff := ComputeAdaptiveEffectiveStop(oldPeak, entry, *trade.EntryATR, *trade.StopLoss, c.adaptive)
 	newEff := ComputeAdaptiveEffectiveStop(newPeak, entry, *trade.EntryATR, *trade.StopLoss, c.adaptive)
 
-	v1ExitStop := event.Price.LessThanOrEqual(*trade.StopLoss)
-	v1ExitTP := trade.TakeProfit != nil && event.Price.GreaterThanOrEqual(*trade.TakeProfit)
-	v1Holds := !v1ExitStop && !v1ExitTP
+	staticExitStop := event.Price.LessThanOrEqual(*trade.StopLoss)
+	staticExitTP := trade.TakeProfit != nil && event.Price.GreaterThanOrEqual(*trade.TakeProfit)
+	staticHolds := !staticExitStop && !staticExitTP
 
 	if !newPeak.Equal(oldPeak) {
 		p := newPeak
@@ -139,7 +138,7 @@ func (c *V2Coordinator) shadowAdaptiveExit(txCtx context.Context, trade *model.T
 		}
 	}
 
-	if !v1Holds {
+	if !staticHolds {
 		return nil
 	}
 
@@ -181,7 +180,7 @@ func (c *V2Coordinator) shadowAdaptiveExit(txCtx context.Context, trade *model.T
 	return nil
 }
 
-func (c *V2Coordinator) shadowLegacyExit(txCtx context.Context, trade *model.Trade, event BarEvent) error {
+func (c *TradingCoordinator) shadowLegacyExit(txCtx context.Context, trade *model.Trade, event BarEvent) error {
 	var action string
 	switch {
 	case trade.StopLoss != nil && event.Price.LessThanOrEqual(*trade.StopLoss):
@@ -212,7 +211,7 @@ func (c *V2Coordinator) shadowLegacyExit(txCtx context.Context, trade *model.Tra
 // Regime gate: when the market regime is off (SPY below EMA-50) the full
 // signal evaluation is skipped and a shadow signal with reasoning="regime_off"
 // is logged instead, making the suppression observable.
-func (c *V2Coordinator) shadowEvaluateBuySignal(ctx context.Context, event BarEvent) {
+func (c *TradingCoordinator) shadowEvaluateBuySignal(ctx context.Context, event BarEvent) {
 	if !c.regime.IsRiskOn() {
 		reason := "regime_off"
 		sig := &model.Signal{
