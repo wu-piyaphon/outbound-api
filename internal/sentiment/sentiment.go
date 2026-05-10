@@ -11,36 +11,38 @@ import (
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 )
 
+// Result carries the sentiment verdict for a symbol.
 type Result struct {
 	Positive  bool
 	Score     float64 // 0.0 (fully negative) to 1.0 (fully positive)
 	Reasoning string
 }
 
+// Provider evaluates sentiment for a given stock symbol.
 type Provider interface {
 	Analyze(ctx context.Context, symbol string) (*Result, error)
 }
 
+// ArticleAnalyzer scores a pre-fetched set of news articles for a given symbol.
+// Implementations include the keyword scorer (v1) and the LLM scorer (v2).
+type ArticleAnalyzer interface {
+	Analyze(ctx context.Context, symbol string, articles []marketdata.News) (*Result, error)
+}
+
+// alpacaNewsProvider fetches recent articles from Alpaca News, then delegates
+// scoring to an inner ArticleAnalyzer. When fewer articles are available than
+// minArticles, it returns a neutral pass-through result without calling the
+// inner analyzer.
 type alpacaNewsProvider struct {
-	client *marketdata.Client
+	client      *marketdata.Client
+	inner       ArticleAnalyzer
+	minArticles int
 }
 
-func NewAlpacaNewsProvider(client *marketdata.Client) Provider {
-	return &alpacaNewsProvider{client: client}
-}
-
-var positiveKeywords = []string{
-	"beat", "exceeds", "surge", "soar", "rally", "gain", "upgrade",
-	"strong", "growth", "profit", "revenue", "record", "bullish",
-	"outperform", "rises", "jumps", "climbs", "boost", "positive",
-	"buy", "overweight", "raises", "breakthrough", "partnership",
-}
-
-var negativeKeywords = []string{
-	"miss", "fall", "drop", "plunge", "decline", "loss", "downgrade",
-	"weak", "risk", "concern", "bearish", "crash", "cut", "lowered",
-	"underperform", "falls", "slides", "tumbles", "warning", "fraud",
-	"investigation", "lawsuit", "bankrupt", "recall", "layoffs", "sell",
+// NewAlpacaNewsProvider constructs a Provider that fetches news from Alpaca and
+// scores it with inner. Set minArticles to 0 to disable the floor check.
+func NewAlpacaNewsProvider(client *marketdata.Client, inner ArticleAnalyzer, minArticles int) Provider {
+	return &alpacaNewsProvider{client: client, inner: inner, minArticles: minArticles}
 }
 
 func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Result, error) {
@@ -66,14 +68,44 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 		}, nil
 	}
 
-	if len(articles) == 0 {
+	if len(articles) == 0 || (p.minArticles > 0 && len(articles) < p.minArticles) {
 		return &Result{
 			Positive:  true,
 			Score:     0.5,
-			Reasoning: fmt.Sprintf("no recent news for %s, proceeding with neutral sentiment", symbol),
+			Reasoning: fmt.Sprintf("insufficient news for %s (%d articles), proceeding with neutral sentiment", symbol, len(articles)),
 		}, nil
 	}
 
+	return p.inner.Analyze(ctx, symbol, articles)
+}
+
+// ---------------------------------------------------------------------------
+// Keyword analyzer — used by the v1 live path.
+// ---------------------------------------------------------------------------
+
+var positiveKeywords = []string{
+	"beat", "exceeds", "surge", "soar", "rally", "gain", "upgrade",
+	"strong", "growth", "profit", "revenue", "record", "bullish",
+	"outperform", "rises", "jumps", "climbs", "boost", "positive",
+	"buy", "overweight", "raises", "breakthrough", "partnership",
+}
+
+var negativeKeywords = []string{
+	"miss", "fall", "drop", "plunge", "decline", "loss", "downgrade",
+	"weak", "risk", "concern", "bearish", "crash", "cut", "lowered",
+	"underperform", "falls", "slides", "tumbles", "warning", "fraud",
+	"investigation", "lawsuit", "bankrupt", "recall", "layoffs", "sell",
+}
+
+type keywordAnalyzer struct{}
+
+// NewKeywordAnalyzer returns an ArticleAnalyzer that scores articles using
+// positive/negative keyword counts. Used by the v1 live strategy path.
+func NewKeywordAnalyzer() ArticleAnalyzer {
+	return &keywordAnalyzer{}
+}
+
+func (k *keywordAnalyzer) Analyze(_ context.Context, symbol string, articles []marketdata.News) (*Result, error) {
 	posScore := 0
 	negScore := 0
 
@@ -103,13 +135,16 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 	score := float64(posScore) / float64(total)
 	positive := score >= 0.4
 
-	reasoning := fmt.Sprintf(
-		"news sentiment for %s: %.0f%% positive (%d pos, %d neg signals across %d articles)",
-		symbol, score*100, posScore, negScore, len(articles),
-	)
-
-	return &Result{Positive: positive, Score: score, Reasoning: reasoning}, nil
+	return &Result{
+		Positive:  positive,
+		Score:     score,
+		Reasoning: fmt.Sprintf("news sentiment for %s: %.0f%% positive (%d pos, %d neg signals across %d articles)", symbol, score*100, posScore, negScore, len(articles)),
+	}, nil
 }
+
+// ---------------------------------------------------------------------------
+// CachedProvider — unchanged.
+// ---------------------------------------------------------------------------
 
 type cachedEntry struct {
 	result    *Result

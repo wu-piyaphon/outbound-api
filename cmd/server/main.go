@@ -157,26 +157,32 @@ func main() {
 		seedIndicators(symbol, marketDataClient, indicatorCache)
 	}
 
-	// Sentiment results are cached for 5 minutes per symbol to avoid a network
-	// round-trip on every bar tick during hot-path signal evaluation.
-	sentimentProvider := sentiment.NewCachedProvider(
-		sentiment.NewAlpacaNewsProvider(marketDataClient),
+	// v1 sentiment: keyword scorer — same behaviour as before PR 1.
+	v1SentimentProvider := sentiment.NewCachedProvider(
+		sentiment.NewAlpacaNewsProvider(marketDataClient, sentiment.NewKeywordAnalyzer(), 0),
 		5*time.Minute,
 	)
 
-	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, sentimentProvider)
+	signalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, v1SentimentProvider)
 	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier, cfg.CommissionFeePct, cfg.FXFeePct)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
 	v1 := strategy.NewV1Coordinator(signalService, tradeService, accountTransferService)
 	var coordinator strategy.Coordinator
 	if cfg.Strategy == config.StrategyV2 {
+		// v2 shadow path uses the DeepSeek LLM for sentiment analysis.
+		llmAnalyzer := sentiment.NewLLMAnalyzer(cfg.SentimentAPIBaseURL, cfg.SentimentAPIKey, cfg.SentimentModel)
+		v2SentimentProvider := sentiment.NewCachedProvider(
+			sentiment.NewAlpacaNewsProvider(marketDataClient, llmAnalyzer, cfg.SentimentMinArticles),
+			5*time.Minute,
+		)
+		shadowSignalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, v2SentimentProvider)
 		shadowRepo := repository.NewShadowRepository(pool)
-		coordinator = strategy.NewV2Coordinator(v1, signalService, tradeRepo, shadowRepo)
-		slog.Info("strategy coordinator: v2 (dual-execute with shadow logging)")
+		coordinator = strategy.NewV2Coordinator(v1, shadowSignalService, tradeRepo, shadowRepo)
+		slog.Info("strategy coordinator: v2 (dual-execute, shadow path uses LLM sentiment)")
 	} else {
 		coordinator = v1
-		slog.Info("strategy coordinator: v1 (live path only)")
+		slog.Info("strategy coordinator: v1 (live path only, keyword sentiment)")
 	}
 
 	initialBotState := bot.StateRunning

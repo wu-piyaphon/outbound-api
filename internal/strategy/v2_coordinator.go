@@ -16,28 +16,32 @@ import (
 // comparison. In PR 0 the shadow path mirrors v1 exactly; future PRs will
 // replace the shadow evaluation with an independent strategy implementation.
 //
+// shadowSignalSvc uses a different sentiment provider (LLM) than the v1
+// signalService, so the two paths are independently observable.
+//
 // Shadow writes are best-effort: failures are logged but never propagate to
 // the caller so the live path is always unaffected.
 type V2Coordinator struct {
-	v1           *V1Coordinator
-	signalSvc    service.SignalService
-	tradeRepo    repository.TradeRepository
-	shadowRepo   repository.ShadowRepository
+	v1               *V1Coordinator
+	shadowSignalSvc  service.SignalService
+	tradeRepo        repository.TradeRepository
+	shadowRepo       repository.ShadowRepository
 }
 
 // NewV2Coordinator constructs a V2Coordinator. The v1 coordinator handles the
-// live path; signalSvc, tradeRepo, and shadowRepo power the shadow path.
+// live path; shadowSignalSvc (which should be wired with the LLM sentiment
+// provider), tradeRepo, and shadowRepo power the shadow path.
 func NewV2Coordinator(
 	v1 *V1Coordinator,
-	signalSvc service.SignalService,
+	shadowSignalSvc service.SignalService,
 	tradeRepo repository.TradeRepository,
 	shadowRepo repository.ShadowRepository,
 ) *V2Coordinator {
 	return &V2Coordinator{
-		v1:         v1,
-		signalSvc:  signalSvc,
-		tradeRepo:  tradeRepo,
-		shadowRepo: shadowRepo,
+		v1:              v1,
+		shadowSignalSvc: shadowSignalSvc,
+		tradeRepo:       tradeRepo,
+		shadowRepo:      shadowRepo,
 	}
 }
 
@@ -100,7 +104,7 @@ func (c *V2Coordinator) shadowEvaluateExits(ctx context.Context, event BarEvent)
 // shadowEvaluateBuySignal previews whether a buy signal would fire for the
 // bar and, if so, logs it to the signals table with mode='shadow'.
 func (c *V2Coordinator) shadowEvaluateBuySignal(ctx context.Context, event BarEvent) {
-	sig, err := c.signalSvc.PreviewBuySignal(ctx, event.Symbol, event.Price)
+	sig, err := c.shadowSignalSvc.PreviewBuySignal(ctx, event.Symbol, event.Price)
 	if err != nil {
 		slog.Warn("shadow: failed to preview buy signal",
 			"symbol", event.Symbol, "error", err)

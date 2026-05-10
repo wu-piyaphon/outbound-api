@@ -36,6 +36,23 @@ type Config struct {
 	// Set to "v2" to enable dual-execution with shadow logging.
 	Strategy StrategyMode
 
+	// Sentiment LLM settings — required when Strategy=v2.
+	//
+	// SentimentAPIBaseURL is the OpenAI-compatible base URL (no trailing slash).
+	// Default: https://api.deepseek.com. Set via SENTIMENT_API_BASE_URL.
+	SentimentAPIBaseURL string
+	// SentimentAPIKey is the bearer token for the sentiment API.
+	// Set via SENTIMENT_API_KEY.
+	SentimentAPIKey string
+	// SentimentModel is the model name passed in the chat completions request.
+	// Default: deepseek-v4-flash. Set via SENTIMENT_MODEL.
+	// Note: deepseek-chat and deepseek-reasoner are deprecated 2026-07-24.
+	SentimentModel string
+	// SentimentMinArticles is the minimum number of news articles required to
+	// call the LLM; below this threshold a neutral pass-through is returned.
+	// Default: 3. Set via SENTIMENT_MIN_ARTICLES.
+	SentimentMinArticles int
+
 	// RiskPerTradePct is the fraction of available budget risked per trade.
 	// Default: 0.01 (1%). Set via RISK_PER_TRADE_PCT env var.
 	RiskPerTradePct decimal.Decimal
@@ -67,15 +84,35 @@ func Load() (*Config, error) {
 		strategy = StrategyV1
 	}
 
+	sentimentAPIBaseURL := os.Getenv("SENTIMENT_API_BASE_URL")
+	if sentimentAPIBaseURL == "" {
+		sentimentAPIBaseURL = "https://api.deepseek.com"
+	}
+	sentimentModel := os.Getenv("SENTIMENT_MODEL")
+	if sentimentModel == "" {
+		sentimentModel = "deepseek-v4-flash"
+	}
+	sentimentMinArticles := 3
+	if raw := os.Getenv("SENTIMENT_MIN_ARTICLES"); raw != "" {
+		n := 0
+		if _, err := fmt.Sscanf(raw, "%d", &n); err == nil && n >= 0 {
+			sentimentMinArticles = n
+		}
+	}
+
 	cfg := &Config{
-		AlpacaAPIKey:    os.Getenv("ALPACA_API_KEY"),
-		AlpacaAPISecret: os.Getenv("ALPACA_API_SECRET"),
-		AlpacaBaseURL:   os.Getenv("ALPACA_BASE_URL"),
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		Port:            os.Getenv("PORT"),
-		BotAutoStart:    os.Getenv("BOT_AUTOSTART") != "false",
-		BotAPIKey:       os.Getenv("BOT_API_KEY"),
-		Strategy:        strategy,
+		AlpacaAPIKey:         os.Getenv("ALPACA_API_KEY"),
+		AlpacaAPISecret:      os.Getenv("ALPACA_API_SECRET"),
+		AlpacaBaseURL:        os.Getenv("ALPACA_BASE_URL"),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		Port:                 os.Getenv("PORT"),
+		BotAutoStart:         os.Getenv("BOT_AUTOSTART") != "false",
+		BotAPIKey:            os.Getenv("BOT_API_KEY"),
+		Strategy:             strategy,
+		SentimentAPIBaseURL:  sentimentAPIBaseURL,
+		SentimentAPIKey:      os.Getenv("SENTIMENT_API_KEY"),
+		SentimentModel:       sentimentModel,
+		SentimentMinArticles: sentimentMinArticles,
 	}
 
 	if cfg.Port == "" {
@@ -154,6 +191,9 @@ func (c *Config) validate() error {
 	}
 	if c.Strategy != StrategyV1 && c.Strategy != StrategyV2 {
 		return fmt.Errorf("STRATEGY must be 'v1' or 'v2', got %q", c.Strategy)
+	}
+	if c.Strategy == StrategyV2 && c.SentimentAPIKey == "" {
+		return fmt.Errorf("SENTIMENT_API_KEY is required when STRATEGY=v2")
 	}
 	return nil
 }
