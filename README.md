@@ -47,8 +47,6 @@ The service is live on a Vultr VPS, deployed continuously via GitHub Actions. It
 
 ## Architecture
 
-![Architecture](assets/architecture.png)
-
 ```mermaid
 flowchart TD
     PG[(PostgreSQL\nSupabase)] -->|"active watchlist symbols"| WatchlistSvc
