@@ -3,6 +3,7 @@ package sentiment
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,40 @@ func testArticles() []marketdata.News {
 	return []marketdata.News{
 		{Headline: "Apple beats Q3 earnings expectations", Summary: "Revenue surged 12% year-over-year."},
 		{Headline: "iPhone sales rally in Asia", Summary: "Strong demand from emerging markets."},
+	}
+}
+
+// fakeNewsClient implements alpacaNewsClient for tests.
+type fakeNewsClient struct {
+	news []marketdata.News
+	err  error
+}
+
+func (f fakeNewsClient) GetNews(_ marketdata.GetNewsRequest) ([]marketdata.News, error) {
+	return f.news, f.err
+}
+
+func TestAlpacaNewsProvider_GetNewsError_ReturnsError(t *testing.T) {
+	spy := &spyAnalyzer{}
+	p := NewAlpacaNewsProvider(fakeNewsClient{err: errors.New("upstream outage")}, spy, 0)
+	_, err := p.Analyze(context.Background(), "AAPL")
+	if err == nil {
+		t.Fatal("expected error when GetNews fails")
+	}
+	if spy.called {
+		t.Error("inner analyzer must not run when news fetch fails")
+	}
+}
+
+func TestAlpacaNewsProvider_GetNewsSuccess_CallsInner(t *testing.T) {
+	spy := &spyAnalyzer{}
+	p := NewAlpacaNewsProvider(fakeNewsClient{news: testArticles()}, spy, 0)
+	_, err := p.Analyze(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !spy.called {
+		t.Error("expected inner analyzer when news fetch succeeds")
 	}
 }
 

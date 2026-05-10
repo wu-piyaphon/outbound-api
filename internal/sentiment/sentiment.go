@@ -29,19 +29,26 @@ type ArticleAnalyzer interface {
 	Analyze(ctx context.Context, symbol string, articles []marketdata.News) (*Result, error)
 }
 
+// alpacaNewsClient is the subset of the Alpaca market data client used to load
+// headlines for sentiment scoring.
+type alpacaNewsClient interface {
+	GetNews(req marketdata.GetNewsRequest) ([]marketdata.News, error)
+}
+
 // alpacaNewsProvider fetches recent articles from Alpaca News, then delegates
-// scoring to an inner ArticleAnalyzer. When fewer articles are available than
-// minArticles, it returns a neutral pass-through result without calling the
-// inner analyzer.
+// scoring to an inner ArticleAnalyzer. Alpaca News API failures return an error
+// (fail-closed: callers skip sentiment-backed buys until news can be read).
+// When there are no articles or fewer than minArticles (when minArticles > 0),
+// it returns a neutral pass-through result without calling the inner analyzer.
 type alpacaNewsProvider struct {
-	client      *marketdata.Client
+	client      alpacaNewsClient
 	inner       ArticleAnalyzer
 	minArticles int
 }
 
 // NewAlpacaNewsProvider constructs a Provider that fetches news from Alpaca and
 // scores it with inner. Set minArticles to 0 to disable the floor check.
-func NewAlpacaNewsProvider(client *marketdata.Client, inner ArticleAnalyzer, minArticles int) Provider {
+func NewAlpacaNewsProvider(client alpacaNewsClient, inner ArticleAnalyzer, minArticles int) Provider {
 	return &alpacaNewsProvider{client: client, inner: inner, minArticles: minArticles}
 }
 
@@ -60,12 +67,8 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 		TotalLimit: 10,
 	})
 	if err != nil {
-		slog.Warn("sentiment: news API error; proceeding with neutral sentiment", "symbol", symbol, "error", err)
-		return &Result{
-			Positive:  true,
-			Score:     0.5,
-			Reasoning: fmt.Sprintf("news unavailable for %s, proceeding with neutral sentiment", symbol),
-		}, nil
+		slog.Warn("sentiment: Alpaca news API failed", "symbol", symbol, "error", err)
+		return nil, fmt.Errorf("sentiment: get news for %s: %w", symbol, err)
 	}
 
 	if len(articles) == 0 || (p.minArticles > 0 && len(articles) < p.minArticles) {
