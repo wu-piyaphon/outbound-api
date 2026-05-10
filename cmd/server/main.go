@@ -24,6 +24,7 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/repository"
 	"github.com/wu-piyaphon/outbound-api/internal/sentiment"
 	"github.com/wu-piyaphon/outbound-api/internal/service"
+	"github.com/wu-piyaphon/outbound-api/internal/strategy"
 	"github.com/wu-piyaphon/outbound-api/migrations"
 
 	alpacaSDK "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
@@ -167,6 +168,17 @@ func main() {
 	tradeService := service.NewTradeService(tradeRepo, accountTransferRepo, signalRepo, transactor, alpacaClient, cfg.RiskPerTradePct, cfg.ATRRiskMultiplier, cfg.TakeProfitMultiplier, cfg.CommissionFeePct, cfg.FXFeePct)
 	accountTransferService := service.NewAccountTransferService(accountTransferRepo)
 
+	v1 := strategy.NewV1Coordinator(signalService, tradeService, accountTransferService)
+	var coordinator strategy.Coordinator
+	if cfg.Strategy == config.StrategyV2 {
+		shadowRepo := repository.NewShadowRepository(pool)
+		coordinator = strategy.NewV2Coordinator(v1, signalService, tradeRepo, shadowRepo)
+		slog.Info("strategy coordinator: v2 (dual-execute with shadow logging)")
+	} else {
+		coordinator = v1
+		slog.Info("strategy coordinator: v1 (live path only)")
+	}
+
 	initialBotState := bot.StateRunning
 	if !cfg.BotAutoStart {
 		initialBotState = bot.StateStopped
@@ -304,26 +316,14 @@ func main() {
 						continue
 					}
 
-					livePrice := decimal.NewFromFloat(bar.Close)
-
-					if err := tradeService.EvaluateAndExecuteExits(streamCtx, bar.Symbol, livePrice); err != nil {
-						slog.Error("failed to check exit conditions", "symbol", bar.Symbol, "error", err)
+					event := strategy.BarEvent{
+						Symbol:  bar.Symbol,
+						Price:   decimal.NewFromFloat(bar.Close),
+						BarTime: bar.Timestamp,
 					}
 
-					entrySignal, err := signalService.EvaluateBuySignal(streamCtx, bar.Symbol, livePrice)
-					if err != nil {
-						slog.Error("failed to evaluate buy signal", "symbol", bar.Symbol, "error", err)
-					}
-
-					if entrySignal != nil {
-						availableBudget, err := accountTransferService.GetAvailableBudget(streamCtx)
-						if err != nil || availableBudget == nil {
-							slog.Error("failed to get active account transfer", "error", err)
-							continue
-						}
-						if _, err = tradeService.ExecuteBuyTrade(streamCtx, entrySignal, availableBudget); err != nil {
-							slog.Error("failed to execute buy trade", "symbol", entrySignal.Symbol, "error", err)
-						}
+					if err := coordinator.EvaluateBar(streamCtx, event); err != nil {
+						slog.Error("coordinator: EvaluateBar failed", "symbol", bar.Symbol, "error", err)
 					}
 
 				case <-streamCtx.Done():

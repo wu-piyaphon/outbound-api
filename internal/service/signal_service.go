@@ -19,6 +19,10 @@ type SignalService interface {
 	GetAllSignals(ctx context.Context) ([]model.Signal, error)
 	CreateSellSignal(ctx context.Context, symbol string, priceAtSignal decimal.Decimal, reasoning string) (*model.Signal, error)
 	EvaluateBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error)
+	// PreviewBuySignal runs the same five-layer checks as EvaluateBuySignal and
+	// returns the signal that would be created, but does NOT persist it. Returns
+	// nil, nil when any layer blocks. Used by shadow strategy paths.
+	PreviewBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error)
 }
 
 type signalService struct {
@@ -64,6 +68,7 @@ func (s *signalService) CreateSellSignal(ctx context.Context, symbol string, pri
 		Side:          model.SideSell,
 		PriceAtSignal: priceAtSignal,
 		IsExecuted:    false,
+		Mode:          model.SignalModeLive,
 		Indicators:    model.SignalIndicators{},
 		Reasoning:     &reasoning,
 		CreatedAt:     time.Now().UTC(),
@@ -128,6 +133,7 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string, cu
 		PriceAtSignal: currentPrice,
 		Indicators:    model.SignalIndicators{EMA: state.EMA, RSI: state.RSI, ATR: state.ATR},
 		IsExecuted:    false,
+		Mode:          model.SignalModeLive,
 		Reasoning:     &reasoning,
 		CreatedAt:     time.Now().UTC(),
 	}
@@ -138,4 +144,56 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string, cu
 	}
 
 	return signal, nil
+}
+
+// PreviewBuySignal runs the same five-layer checks as EvaluateBuySignal and
+// returns the signal struct that would be created, without persisting it.
+// Returns nil, nil when any layer blocks. The returned signal has Mode set to
+// SignalModeShadow for use by the shadow coordinator.
+func (s *signalService) PreviewBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error) {
+	hasPosition, err := s.tradeRepo.HasOpenPosition(ctx, symbol)
+	if err != nil {
+		return nil, fmt.Errorf("PreviewBuySignal: checking open position: %w", err)
+	}
+	if hasPosition {
+		return nil, nil
+	}
+
+	state, ready := s.indicators.Get(symbol)
+	if !ready {
+		return nil, nil
+	}
+
+	if !currentPrice.GreaterThan(state.EMA) {
+		return nil, nil
+	}
+
+	if !state.RSI.LessThan(decimal.NewFromInt(35)) {
+		return nil, nil
+	}
+
+	sentimentResult, err := s.sentimentProvider.Analyze(ctx, symbol)
+	if err != nil {
+		return nil, fmt.Errorf("PreviewBuySignal: sentiment: %w", err)
+	}
+	if !sentimentResult.Positive {
+		return nil, nil
+	}
+
+	reasoning := fmt.Sprintf(
+		"[shadow] Trend+Momentum+Sentiment confirmed. Price: %v, EMA200: %v, RSI14: %v, ATR14: %v. Sentiment: %s",
+		currentPrice, state.EMA, state.RSI, state.ATR, sentimentResult.Reasoning,
+	)
+
+	return &model.Signal{
+		ID:            uuid.New(),
+		Symbol:        symbol,
+		Side:          model.SideBuy,
+		PriceAtSignal: currentPrice,
+		Indicators:    model.SignalIndicators{EMA: state.EMA, RSI: state.RSI, ATR: state.ATR},
+		IsExecuted:    false,
+		Mode:          model.SignalModeShadow,
+		Reasoning:     &reasoning,
+		CreatedAt:     time.Now().UTC(),
+	}, nil
 }

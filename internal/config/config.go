@@ -7,6 +7,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// StrategyMode selects which coordinator runs bar events.
+type StrategyMode string
+
+const (
+	// StrategyV1 runs only the live strategy path (default).
+	StrategyV1 StrategyMode = "v1"
+	// StrategyV2 dual-executes: live path (v1) plus a shadow path that writes
+	// to shadow_exit_decisions and signals (mode='shadow') for comparison.
+	StrategyV2 StrategyMode = "v2"
+)
+
 type Config struct {
 	AlpacaAPIKey    string
 	AlpacaAPISecret string
@@ -20,6 +31,10 @@ type Config struct {
 	// (/bot/start, /bot/pause, /bot/stop, /bot/status).
 	// Set via BOT_API_KEY env var.
 	BotAPIKey string
+
+	// Strategy selects the coordinator mode. Defaults to "v1" (live path only).
+	// Set to "v2" to enable dual-execution with shadow logging.
+	Strategy StrategyMode
 
 	// RiskPerTradePct is the fraction of available budget risked per trade.
 	// Default: 0.01 (1%). Set via RISK_PER_TRADE_PCT env var.
@@ -47,6 +62,11 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	strategy := StrategyMode(os.Getenv("STRATEGY"))
+	if strategy == "" {
+		strategy = StrategyV1
+	}
+
 	cfg := &Config{
 		AlpacaAPIKey:    os.Getenv("ALPACA_API_KEY"),
 		AlpacaAPISecret: os.Getenv("ALPACA_API_SECRET"),
@@ -55,6 +75,7 @@ func Load() (*Config, error) {
 		Port:            os.Getenv("PORT"),
 		BotAutoStart:    os.Getenv("BOT_AUTOSTART") != "false",
 		BotAPIKey:       os.Getenv("BOT_API_KEY"),
+		Strategy:        strategy,
 	}
 
 	if cfg.Port == "" {
@@ -130,6 +151,9 @@ func (c *Config) validate() error {
 	}
 	if c.BotAPIKey == "" {
 		return fmt.Errorf("BOT_API_KEY is required")
+	}
+	if c.Strategy != StrategyV1 && c.Strategy != StrategyV2 {
+		return fmt.Errorf("STRATEGY must be 'v1' or 'v2', got %q", c.Strategy)
 	}
 	return nil
 }

@@ -309,6 +309,7 @@ func (t *tradeService) EvaluateAndExecuteExits(ctx context.Context, symbol strin
 				Side:          model.SideSell,
 				PriceAtSignal: currentPrice,
 				IsExecuted:    false,
+				Mode:          model.SignalModeLive,
 				CreatedAt:     time.Now().UTC(),
 			}
 

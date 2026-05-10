@@ -8,14 +8,15 @@ import (
 )
 
 type Signal struct {
-	ID            uuid.UUID        `db:"id" json:"id"`
-	Symbol        string           `db:"symbol" json:"symbol"`
-	Side          Side             `db:"side" json:"side"`
-	PriceAtSignal decimal.Decimal  `db:"price_at_signal" json:"price_at_signal"`
+	ID            uuid.UUID       `db:"id" json:"id"`
+	Symbol        string          `db:"symbol" json:"symbol"`
+	Side          Side            `db:"side" json:"side"`
+	PriceAtSignal decimal.Decimal `db:"price_at_signal" json:"price_at_signal"`
 	Indicators    SignalIndicators `db:"indicators" json:"indicators"`
-	IsExecuted    bool             `db:"is_executed" json:"is_executed"`
-	Reasoning     *string          `db:"reasoning" json:"reasoning"`
-	CreatedAt     time.Time        `db:"created_at" json:"created_at"`
+	IsExecuted    bool            `db:"is_executed" json:"is_executed"`
+	Mode          SignalMode      `db:"mode" json:"mode"`
+	Reasoning     *string         `db:"reasoning" json:"reasoning"`
+	CreatedAt     time.Time       `db:"created_at" json:"created_at"`
 }
 
 type SignalIndicators struct {
