@@ -1,3 +1,5 @@
+// Package alpaca wraps the Alpaca SDK: trading client, market-data client,
+// stocks bar stream with non-blocking dispatch, and trade-update stream.
 package alpaca
 
 import (

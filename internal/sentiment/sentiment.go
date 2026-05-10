@@ -1,3 +1,6 @@
+// Package sentiment scores recent news for a symbol. The live execution path
+// uses the keyword analyzer; the shadow path uses the LLM analyzer. Results
+// are memoised per symbol via CachedProvider to bound news API traffic.
 package sentiment
 
 import (
@@ -82,10 +85,6 @@ func (p *alpacaNewsProvider) Analyze(ctx context.Context, symbol string) (*Resul
 	return p.inner.Analyze(ctx, symbol, articles)
 }
 
-// ---------------------------------------------------------------------------
-// Keyword analyzer — used by the live execution path.
-// ---------------------------------------------------------------------------
-
 var positiveKeywords = []string{
 	"beat", "exceeds", "surge", "soar", "rally", "gain", "upgrade",
 	"strong", "growth", "profit", "revenue", "record", "bullish",
@@ -144,10 +143,6 @@ func (k *keywordAnalyzer) Analyze(_ context.Context, symbol string, articles []m
 		Reasoning: fmt.Sprintf("news sentiment for %s: %.0f%% positive (%d pos, %d neg signals across %d articles)", symbol, score*100, posScore, negScore, len(articles)),
 	}, nil
 }
-
-// ---------------------------------------------------------------------------
-// CachedProvider — unchanged.
-// ---------------------------------------------------------------------------
 
 type cachedEntry struct {
 	result    *Result

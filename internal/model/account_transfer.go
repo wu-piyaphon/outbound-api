@@ -7,6 +7,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// AccountTransfer is a single funding deposit (THB → USD) that bounds how
+// many positions the bot can open from it. RemainingTrades is decremented as
+// each buy fires and incremented back if the buy fails or is cancelled.
 type AccountTransfer struct {
 	ID              uuid.UUID        `db:"id" json:"id"`
 	Type            string           `db:"type" json:"type"`

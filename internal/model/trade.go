@@ -28,6 +28,9 @@ type Trade struct {
 	PeakPrice         *decimal.Decimal `db:"peak_price" json:"peak_price"`
 	EntryATR          *decimal.Decimal `db:"entry_atr" json:"entry_atr"`
 	Status            Status           `db:"status" json:"status"`
+	// Metadata is a free-form JSON audit blob — currently the risk-sizing
+	// inputs (risk amount, ATR multipliers) so a trade's sizing decision can
+	// be reconstructed without re-running the strategy.
 	Metadata          map[string]any   `db:"metadata" json:"metadata"`
 	FilledAt          *time.Time       `db:"filled_at" json:"filled_at"`
 	CreatedAt         time.Time        `db:"created_at" json:"created_at"`

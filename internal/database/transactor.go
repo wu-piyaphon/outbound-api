@@ -11,10 +11,15 @@ type transactor struct {
 	pool *pgxpool.Pool
 }
 
+// NewTransactor returns a repository.Transactor that opens transactions
+// against the supplied pgx pool.
 func NewTransactor(pool *pgxpool.Pool) repository.Transactor {
 	return &transactor{pool: pool}
 }
 
+// WithinTransaction begins a transaction, injects it into the context, runs fn,
+// and commits if fn returns nil. Any error from fn (or the commit) triggers a
+// rollback via the deferred call.
 func (t *transactor) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
 	tx, err := t.pool.Begin(ctx)
 	if err != nil {

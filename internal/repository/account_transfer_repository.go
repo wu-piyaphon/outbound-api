@@ -35,6 +35,7 @@ const insertAccountTransferQuery = `
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
+// Create inserts a new account transfer row.
 func (a *accountTransferRepository) Create(ctx context.Context, transfer *model.AccountTransfer) error {
 	args := []any{
 		transfer.ID,
@@ -115,6 +116,9 @@ const incrementRemainingTradesQuery = `
 	WHERE id = $1
 `
 
+// IncrementRemainingTrades restores one trade slot, used when a buy is
+// rejected, cancelled, or fails to place at the broker so the budget remains
+// available for future signals.
 func (a *accountTransferRepository) IncrementRemainingTrades(ctx context.Context, transferID uuid.UUID) error {
 	args := []any{
 		transferID,

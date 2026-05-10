@@ -5,10 +5,17 @@ import (
 )
 
 // AdaptiveExitParams configures ATR-based shadow exits compared against live
-// static stop-loss / take-profit levels.
+// static stop-loss / take-profit levels. Values are loaded from config and
+// expressed in ATR multiples at entry time.
 type AdaptiveExitParams struct {
+	// BreakEvenATRTrigger is the profit (in ATR units) at which the stop is
+	// lifted to entry price, locking out the loss. Default 1.0.
 	BreakEvenATRTrigger decimal.Decimal
+	// TrailATRTrigger is the profit (in ATR units) at which the trailing stop
+	// activates and supersedes the break-even tier. Default 1.5.
 	TrailATRTrigger     decimal.Decimal
+	// TrailATRDistance is the distance (in ATR units) the trailing stop sits
+	// below the running peak price once trailing is active. Default 2.0.
 	TrailATRDistance    decimal.Decimal
 }
 

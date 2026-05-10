@@ -1,3 +1,6 @@
+// Package service holds the business-logic layer that sits between the
+// strategy coordinators and the repository / broker integrations: signal
+// evaluation, trade lifecycle, account budgeting, and watchlist management.
 package service
 
 import (
@@ -146,10 +149,6 @@ func (s *signalService) EvaluateBuySignal(ctx context.Context, symbol string, cu
 	return signal, nil
 }
 
-// PreviewBuySignal runs the same five-layer checks as EvaluateBuySignal and
-// returns the signal struct that would be created, without persisting it.
-// Returns nil, nil when any layer blocks. The returned signal has Mode set to
-// SignalModeShadow for use by the shadow coordinator.
 func (s *signalService) PreviewBuySignal(ctx context.Context, symbol string, currentPrice decimal.Decimal) (*model.Signal, error) {
 	hasPosition, err := s.tradeRepo.HasOpenPosition(ctx, symbol)
 	if err != nil {

@@ -1,3 +1,5 @@
+// Package bot provides the lock-free Controller used to gate bar processing on
+// the bot's run / pause / stop state.
 package bot
 
 import (

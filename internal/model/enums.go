@@ -1,5 +1,8 @@
+// Package model holds the domain types shared by the repository, service, and
+// strategy layers. Types are plain structs with db/json tags; no behaviour.
 package model
 
+// Side is the direction of a trade or signal.
 type Side string
 
 const (
@@ -7,6 +10,9 @@ const (
 	SideSell Side = "sell"
 )
 
+// Status tracks a trade's lifecycle from local placement to a terminal
+// broker outcome. Filled, Cancelled, and Rejected are terminal — broker
+// events for trades already in those states are ignored as replays.
 type Status string
 
 const (

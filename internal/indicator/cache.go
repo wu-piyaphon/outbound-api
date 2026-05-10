@@ -1,3 +1,6 @@
+// Package indicator computes EMA, RSI, and ATR over historical bars and caches
+// the per-symbol results so the trading hot path makes zero network calls. The
+// regime sub-cache (SPY > EMA-50) is kept separately and is fail-closed.
 package indicator
 
 import (

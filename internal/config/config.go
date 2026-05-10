@@ -1,3 +1,5 @@
+// Package config loads runtime settings from environment variables and applies
+// the defaults documented on each Config field.
 package config
 
 import (
@@ -7,6 +9,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Config holds all runtime settings loaded from environment variables.
+// Construct via Load; all fields are validated before the struct is returned.
 type Config struct {
 	AlpacaAPIKey    string
 	AlpacaAPISecret string
@@ -81,6 +85,9 @@ type Config struct {
 	TrailATRDistance decimal.Decimal
 }
 
+// Load reads configuration from environment variables, applies defaults for
+// optional values, and runs validate. Returns an error if any required variable
+// is missing or any decimal/integer value fails to parse.
 func Load() (*Config, error) {
 	sentimentAPIBaseURL := os.Getenv("SENTIMENT_API_BASE_URL")
 	if sentimentAPIBaseURL == "" {

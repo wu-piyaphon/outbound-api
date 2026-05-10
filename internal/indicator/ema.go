@@ -6,6 +6,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// CalculateEMA returns the standard exponential moving average of values with
+// smoothing factor 2/(period+1), seeded by the simple average of the first
+// period entries. Requires len(values) >= period.
 func CalculateEMA(values []decimal.Decimal, period int) (decimal.Decimal, error) {
 	if period <= 0 {
 		return decimal.Zero, errors.New("period must be greater than zero")

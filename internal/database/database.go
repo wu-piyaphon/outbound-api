@@ -1,3 +1,5 @@
+// Package database wires the pgx connection pool, runs embedded migrations on
+// boot, and provides the Transactor implementation used by repositories.
 package database
 
 import (

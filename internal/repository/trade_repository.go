@@ -10,12 +10,24 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
+// TradeRepository persists Trade rows and the queries that drive the trading
+// hot path (open-position checks, exit evaluation, broker reconciliation).
 type TradeRepository interface {
+	// Create inserts a new trade row.
 	Create(ctx context.Context, trade model.Trade) error
+	// GetOpenBuyTradesBySymbol returns active buy trades for symbol that have
+	// no sell child, locking the rows with FOR UPDATE SKIP LOCKED so concurrent
+	// workers do not double-process the same exit.
 	GetOpenBuyTradesBySymbol(ctx context.Context, symbol string) ([]*model.Trade, error)
+	// GetByAlpacaOrderID looks up a trade by its broker-side order ID.
+	// Returns nil, nil when no matching row exists.
 	GetByAlpacaOrderID(ctx context.Context, alpacaOrderID string) (*model.Trade, error)
+	// Update overwrites all mutable columns for the trade with the given ID.
 	Update(ctx context.Context, trade model.Trade) error
+	// Delete removes a trade row by ID.
 	Delete(ctx context.Context, id uuid.UUID) error
+	// HasOpenPosition reports whether any non-terminal buy trade exists for
+	// symbol with no sell child. Used to enforce one-position-per-symbol.
 	HasOpenPosition(ctx context.Context, symbol string) (bool, error)
 }
 
@@ -23,6 +35,7 @@ type tradeRepository struct {
 	pool DBTX
 }
 
+// NewTradeRepository constructs a TradeRepository backed by pool.
 func NewTradeRepository(pool DBTX) TradeRepository {
 	return &tradeRepository{pool: pool}
 }
@@ -33,26 +46,26 @@ const insertTradeQuery = `
 
 func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 	args := []any{
-		trade.ID,                // $1
-		trade.ParentID,          // $2
-		trade.SignalID,          // $3
-		trade.AccountTransferID, // $4
-		trade.AlpacaOrderID,     // $5
-		trade.Symbol,            // $6
-		trade.Side,              // $7
-		trade.Quantity,          // $8
-		trade.PricePerUnit,      // $9
-		trade.AvgFillPrice,      // $10
-		trade.CommissionFee,     // $11
-		trade.FXFeeAmortized,    // $12
-		trade.StopLoss,          // $13
-		trade.TakeProfit,        // $14
-		trade.PeakPrice,         // $15
-		trade.EntryATR,          // $16
-		trade.Status,            // $17
-		trade.Metadata,          // $18
-		trade.FilledAt,          // $19
-		trade.CreatedAt,         // $20
+		trade.ID,
+		trade.ParentID,
+		trade.SignalID,
+		trade.AccountTransferID,
+		trade.AlpacaOrderID,
+		trade.Symbol,
+		trade.Side,
+		trade.Quantity,
+		trade.PricePerUnit,
+		trade.AvgFillPrice,
+		trade.CommissionFee,
+		trade.FXFeeAmortized,
+		trade.StopLoss,
+		trade.TakeProfit,
+		trade.PeakPrice,
+		trade.EntryATR,
+		trade.Status,
+		trade.Metadata,
+		trade.FilledAt,
+		trade.CreatedAt,
 	}
 
 	_, err := GetDB(ctx, t.pool).Exec(ctx, insertTradeQuery, args...)
@@ -211,25 +224,25 @@ const updateTradeQuery = `
 
 func (t *tradeRepository) Update(ctx context.Context, trade model.Trade) error {
 	args := []any{
-		trade.ID,                // $1
-		trade.ParentID,          // $2
-		trade.SignalID,          // $3
-		trade.AccountTransferID, // $4
-		trade.AlpacaOrderID,     // $5
-		trade.Symbol,            // $6
-		trade.Side,              // $7
-		trade.Quantity,          // $8
-		trade.PricePerUnit,      // $9
-		trade.AvgFillPrice,      // $10
-		trade.CommissionFee,     // $11
-		trade.FXFeeAmortized,    // $12
-		trade.StopLoss,          // $13
-		trade.TakeProfit,        // $14
-		trade.PeakPrice,         // $15
-		trade.EntryATR,          // $16
-		trade.Status,            // $17
-		trade.Metadata,          // $18
-		trade.FilledAt,          // $19
+		trade.ID,
+		trade.ParentID,
+		trade.SignalID,
+		trade.AccountTransferID,
+		trade.AlpacaOrderID,
+		trade.Symbol,
+		trade.Side,
+		trade.Quantity,
+		trade.PricePerUnit,
+		trade.AvgFillPrice,
+		trade.CommissionFee,
+		trade.FXFeeAmortized,
+		trade.StopLoss,
+		trade.TakeProfit,
+		trade.PeakPrice,
+		trade.EntryATR,
+		trade.Status,
+		trade.Metadata,
+		trade.FilledAt,
 	}
 
 	_, err := GetDB(ctx, t.pool).Exec(ctx, updateTradeQuery, args...)

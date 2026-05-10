@@ -1,3 +1,5 @@
+// Package http exposes the bot's control endpoints (start / pause / stop /
+// status). All mutating endpoints are guarded by RequireAPIKey.
 package http
 
 import (
@@ -9,11 +11,15 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/bot"
 )
 
+// BotHandlers exposes HTTP endpoints for controlling the trading bot's
+// run/pause/stop state. All endpoints are guarded by RequireAPIKey.
 type BotHandlers struct {
 	controller *bot.Controller
 	apiKey     string
 }
 
+// NewBotHandlers returns a BotHandlers that delegates state changes to
+// controller and authenticates requests against apiKey.
 func NewBotHandlers(controller *bot.Controller, apiKey string) *BotHandlers {
 	return &BotHandlers{controller: controller, apiKey: apiKey}
 }
@@ -45,6 +51,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// Start transitions the bot to running. Returns 409 if already running.
 func (h *BotHandlers) Start(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
@@ -57,6 +64,8 @@ func (h *BotHandlers) Start(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{Status: h.controller.State().String()})
 }
 
+// Pause halts signal evaluation while keeping the stream connection alive.
+// Returns 409 unless the bot is currently running.
 func (h *BotHandlers) Pause(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
@@ -69,6 +78,8 @@ func (h *BotHandlers) Pause(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{Status: h.controller.State().String()})
 }
 
+// Stop transitions the bot to stopped from any non-stopped state.
+// Returns 409 if already stopped.
 func (h *BotHandlers) Stop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
@@ -81,6 +92,7 @@ func (h *BotHandlers) Stop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{Status: h.controller.State().String()})
 }
 
+// Status returns the bot's current operational state as JSON.
 func (h *BotHandlers) Status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{Status: h.controller.State().String()})
 }

@@ -9,8 +9,11 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
+// SignalRepository persists Signal rows for both live and shadow modes.
 type SignalRepository interface {
+	// GetAll returns every signal row.
 	GetAll(ctx context.Context) ([]model.Signal, error)
+	// Create inserts a new signal row.
 	Create(ctx context.Context, signal *model.Signal) error
 	// Delete removes a signal by ID. Used to clean up a signal record that was
 	// orphaned when the subsequent broker call failed, so the next evaluation
@@ -25,6 +28,7 @@ type signalRepository struct {
 	pool DBTX
 }
 
+// NewSignalRepository constructs a SignalRepository backed by pool.
 func NewSignalRepository(pool DBTX) SignalRepository {
 	return &signalRepository{pool: pool}
 }
