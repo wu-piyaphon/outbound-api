@@ -60,6 +60,37 @@ func seedIndicators(symbol string, client *marketdata.Client, cache *indicator.I
 	slog.Info("seedIndicators: ready", "symbol", symbol)
 }
 
+// seedRegime fetches 14 months of daily bars for the regime symbol and seeds
+// the regime cache. A failure leaves the cache unseeded (fail-closed: regime
+// treated as off until a subsequent seed succeeds).
+func seedRegime(symbol string, client *marketdata.Client, cache *indicator.RegimeCache, emaPeriod int) {
+	bars, err := client.GetBars(symbol, marketdata.GetBarsRequest{
+		TimeFrame: marketdata.OneDay,
+		Start:     time.Now().AddDate(-1, -2, 0),
+		End:       time.Now(),
+	})
+	if err != nil {
+		slog.Error("seedRegime: GetBars failed", "symbol", symbol, "error", err)
+		return
+	}
+
+	ibars := make([]indicator.Bar, len(bars))
+	for i, b := range bars {
+		ibars[i] = indicator.Bar{
+			High:  decimal.NewFromFloat(b.High),
+			Low:   decimal.NewFromFloat(b.Low),
+			Close: decimal.NewFromFloat(b.Close),
+		}
+	}
+
+	if err := cache.Seed(ibars, emaPeriod); err != nil {
+		slog.Error("seedRegime: Seed failed", "symbol", symbol, "error", err)
+		return
+	}
+
+	slog.Info("seedRegime: ready", "symbol", symbol, "risk_on", cache.IsRiskOn())
+}
+
 // connectWithRetry runs connectFn in a loop, backing off exponentially after
 // each failure. It returns only when ctx is cancelled.
 //
@@ -157,6 +188,10 @@ func main() {
 		seedIndicators(symbol, marketDataClient, indicatorCache)
 	}
 
+	// Regime cache is seeded separately — fail-closed until first success.
+	regimeCache := indicator.NewRegimeCache()
+	seedRegime(cfg.RegimeSymbol, marketDataClient, regimeCache, cfg.RegimeEMAPeriod)
+
 	// v1 sentiment: keyword scorer — same behaviour as before PR 1.
 	v1SentimentProvider := sentiment.NewCachedProvider(
 		sentiment.NewAlpacaNewsProvider(marketDataClient, sentiment.NewKeywordAnalyzer(), 0),
@@ -178,8 +213,8 @@ func main() {
 		)
 		shadowSignalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, v2SentimentProvider)
 		shadowRepo := repository.NewShadowRepository(pool)
-		coordinator = strategy.NewV2Coordinator(v1, shadowSignalService, tradeRepo, shadowRepo)
-		slog.Info("strategy coordinator: v2 (dual-execute, shadow path uses LLM sentiment)")
+		coordinator = strategy.NewV2Coordinator(v1, shadowSignalService, tradeRepo, shadowRepo, regimeCache)
+		slog.Info("strategy coordinator: v2 (dual-execute, shadow path uses LLM sentiment + regime filter)")
 	} else {
 		coordinator = v1
 		slog.Info("strategy coordinator: v1 (live path only, keyword sentiment)")
@@ -303,6 +338,7 @@ func main() {
 				for _, s := range watchlists {
 					seedIndicators(s, marketDataClient, indicatorCache)
 				}
+				seedRegime(cfg.RegimeSymbol, marketDataClient, regimeCache, cfg.RegimeEMAPeriod)
 				slog.Info("daily indicator re-seed complete")
 			case <-streamCtx.Done():
 				return

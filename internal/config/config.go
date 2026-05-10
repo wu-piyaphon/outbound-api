@@ -53,6 +53,16 @@ type Config struct {
 	// Default: 3. Set via SENTIMENT_MIN_ARTICLES.
 	SentimentMinArticles int
 
+	// Regime filter settings — used by the v2 shadow path.
+	//
+	// RegimeSymbol is the index ticker used for the market regime filter.
+	// Default: SPY. Set via REGIME_SYMBOL.
+	RegimeSymbol string
+	// RegimeEMAPeriod is the EMA period for the regime filter.
+	// The shadow buy gate fires only when RegimeSymbol close > EMA(period).
+	// Default: 50. Set via REGIME_EMA_PERIOD.
+	RegimeEMAPeriod int
+
 	// RiskPerTradePct is the fraction of available budget risked per trade.
 	// Default: 0.01 (1%). Set via RISK_PER_TRADE_PCT env var.
 	RiskPerTradePct decimal.Decimal
@@ -100,6 +110,18 @@ func Load() (*Config, error) {
 		}
 	}
 
+	regimeSymbol := os.Getenv("REGIME_SYMBOL")
+	if regimeSymbol == "" {
+		regimeSymbol = "SPY"
+	}
+	regimeEMAPeriod := 50
+	if raw := os.Getenv("REGIME_EMA_PERIOD"); raw != "" {
+		n := 0
+		if _, err := fmt.Sscanf(raw, "%d", &n); err == nil && n > 0 {
+			regimeEMAPeriod = n
+		}
+	}
+
 	cfg := &Config{
 		AlpacaAPIKey:         os.Getenv("ALPACA_API_KEY"),
 		AlpacaAPISecret:      os.Getenv("ALPACA_API_SECRET"),
@@ -113,6 +135,8 @@ func Load() (*Config, error) {
 		SentimentAPIKey:      os.Getenv("SENTIMENT_API_KEY"),
 		SentimentModel:       sentimentModel,
 		SentimentMinArticles: sentimentMinArticles,
+		RegimeSymbol:         regimeSymbol,
+		RegimeEMAPeriod:      regimeEMAPeriod,
 	}
 
 	if cfg.Port == "" {

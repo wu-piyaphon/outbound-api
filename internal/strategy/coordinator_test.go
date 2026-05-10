@@ -12,6 +12,11 @@ import (
 	"github.com/wu-piyaphon/outbound-api/internal/model"
 )
 
+// mockRegimeReader satisfies indicator.RegimeReader for tests.
+type mockRegimeReader struct{ riskOn bool }
+
+func (m *mockRegimeReader) IsRiskOn() bool { return m.riskOn }
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -247,7 +252,7 @@ func TestV2_EvaluateBar_V1PathUnchanged(t *testing.T) {
 	shadowRepo := &mockShadowRepo{}
 
 	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
 
 	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -279,7 +284,7 @@ func TestV2_EvaluateBar_ShadowBuySignalLogged(t *testing.T) {
 	shadowRepo := &mockShadowRepo{}
 
 	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
 
 	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -311,7 +316,7 @@ func TestV2_EvaluateBar_ShadowExitDecisionLogged(t *testing.T) {
 	shadowRepo := &mockShadowRepo{}
 
 	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
 
 	// Price 150 is above stop (140) — no exit triggered.
 	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
@@ -349,7 +354,7 @@ func TestV2_EvaluateBar_ShadowTakeProfitLogged(t *testing.T) {
 	shadowRepo := &mockShadowRepo{}
 
 	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
 
 	// Price 150 >= take-profit 145 — exit_take_profit should be logged.
 	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
@@ -375,7 +380,7 @@ func TestV2_EvaluateBar_ShadowFailures_DoNotBlockLivePath(t *testing.T) {
 	shadowRepo := &mockShadowRepo{signalErr: errors.New("insert failed")}
 
 	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
 
 	// All shadow paths fail — live path must still succeed.
 	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
@@ -408,7 +413,7 @@ func TestV2_EvaluateBar_HoldNotLogged(t *testing.T) {
 	shadowRepo := &mockShadowRepo{}
 
 	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
-	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
 
 	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -416,5 +421,124 @@ func TestV2_EvaluateBar_HoldNotLogged(t *testing.T) {
 
 	if len(shadowRepo.exitLogs) != 0 {
 		t.Errorf("hold decisions must not be logged; got %d rows", len(shadowRepo.exitLogs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regime gate tests
+// ---------------------------------------------------------------------------
+
+func TestV2_RegimeOff_SkipsPreviewAndLogsRegimeOff(t *testing.T) {
+	sigSvc := &mockSignalService{previewResult: newSignal()}
+	tradeSvc := &mockTradeService{}
+	atSvc := &mockAccountTransferService{}
+	tradeRepo := &mockTradeRepo{}
+	shadowRepo := &mockShadowRepo{}
+
+	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	// regime OFF
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false})
+
+	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// PreviewBuySignal must NOT be called when regime is off.
+	if sigSvc.previewCalls != 0 {
+		t.Errorf("PreviewBuySignal must not run when regime is off, got %d calls", sigSvc.previewCalls)
+	}
+
+	// A regime_off shadow signal must be logged.
+	if len(shadowRepo.signalLogs) != 1 {
+		t.Fatalf("expected 1 regime_off shadow signal, got %d", len(shadowRepo.signalLogs))
+	}
+	logged := shadowRepo.signalLogs[0]
+	if logged.Reasoning == nil || *logged.Reasoning != "regime_off" {
+		t.Errorf("expected reasoning='regime_off', got %v", logged.Reasoning)
+	}
+	if logged.Mode != model.SignalModeShadow {
+		t.Errorf("expected mode='shadow', got %q", logged.Mode)
+	}
+	if logged.Side != model.SideBuy {
+		t.Errorf("expected side='buy', got %q", logged.Side)
+	}
+}
+
+func TestV2_RegimeOff_LiveV1PathUnaffected(t *testing.T) {
+	sig := newSignal()
+	sigSvc := &mockSignalService{evaluateResult: sig}
+	tradeSvc := &mockTradeService{}
+	atSvc := &mockAccountTransferService{budget: newBudget()}
+	tradeRepo := &mockTradeRepo{}
+	shadowRepo := &mockShadowRepo{}
+
+	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false})
+
+	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// v1 must still run its full path regardless of regime state.
+	if tradeSvc.exitCalls != 1 {
+		t.Errorf("v1 exit evaluation must run even when regime is off, got %d calls", tradeSvc.exitCalls)
+	}
+	if tradeSvc.buyCalls != 1 {
+		t.Errorf("v1 buy execution must run even when regime is off, got %d calls", tradeSvc.buyCalls)
+	}
+}
+
+func TestV2_RegimeOn_CallsPreviewNormally(t *testing.T) {
+	shadowSig := &model.Signal{
+		ID:     uuid.New(),
+		Symbol: "AAPL",
+		Mode:   model.SignalModeShadow,
+	}
+	sigSvc := &mockSignalService{
+		evaluateResult: nil,
+		previewResult:  shadowSig,
+	}
+	tradeSvc := &mockTradeService{}
+	atSvc := &mockAccountTransferService{}
+	tradeRepo := &mockTradeRepo{}
+	shadowRepo := &mockShadowRepo{}
+
+	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	// regime ON
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: true})
+
+	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if sigSvc.previewCalls != 1 {
+		t.Errorf("expected PreviewBuySignal called once when regime is on, got %d", sigSvc.previewCalls)
+	}
+	if len(shadowRepo.signalLogs) != 1 {
+		t.Errorf("expected 1 shadow signal logged, got %d", len(shadowRepo.signalLogs))
+	}
+	// Must NOT be a regime_off marker.
+	if shadowRepo.signalLogs[0].Reasoning != nil && *shadowRepo.signalLogs[0].Reasoning == "regime_off" {
+		t.Error("shadow signal must not have reasoning='regime_off' when regime is on")
+	}
+}
+
+func TestV2_RegimeOff_ShadowLogFailure_DoesNotBlockLivePath(t *testing.T) {
+	sig := newSignal()
+	sigSvc := &mockSignalService{evaluateResult: sig}
+	tradeSvc := &mockTradeService{}
+	atSvc := &mockAccountTransferService{budget: newBudget()}
+	tradeRepo := &mockTradeRepo{}
+	shadowRepo := &mockShadowRepo{signalErr: errors.New("db full")}
+
+	v1 := NewV1Coordinator(sigSvc, tradeSvc, atSvc)
+	v2 := NewV2Coordinator(v1, sigSvc, tradeRepo, shadowRepo, &mockRegimeReader{riskOn: false})
+
+	// Shadow log fails, but live path must still complete without error.
+	if err := v2.EvaluateBar(context.Background(), testEvent); err != nil {
+		t.Fatalf("live path must not fail on shadow log error, got: %v", err)
+	}
+	if tradeSvc.buyCalls != 1 {
+		t.Errorf("v1 buy must still run despite shadow log error, got %d calls", tradeSvc.buyCalls)
 	}
 }
