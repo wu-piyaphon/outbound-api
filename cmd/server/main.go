@@ -213,7 +213,11 @@ func main() {
 		)
 		shadowSignalService := service.NewSignalService(signalRepo, tradeRepo, indicatorCache, v2SentimentProvider)
 		shadowRepo := repository.NewShadowRepository(pool)
-		coordinator = strategy.NewV2Coordinator(v1, shadowSignalService, tradeRepo, shadowRepo, regimeCache)
+		coordinator = strategy.NewV2Coordinator(v1, shadowSignalService, tradeRepo, shadowRepo, regimeCache, transactor, strategy.AdaptiveExitParams{
+			BreakEvenATRTrigger: cfg.BreakEvenATRTrigger,
+			TrailATRTrigger:     cfg.TrailATRTrigger,
+			TrailATRDistance:    cfg.TrailATRDistance,
+		})
 		slog.Info("strategy coordinator: v2 (dual-execute, shadow path uses LLM sentiment + regime filter)")
 	} else {
 		coordinator = v1

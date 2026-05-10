@@ -177,6 +177,9 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 	stopLoss := signal.PriceAtSignal.Sub(signal.Indicators.ATR.Mul(t.atrRiskMultiplier))
 	takeProfit := signal.PriceAtSignal.Add(signal.Indicators.ATR.Mul(t.takeProfitMultiplier))
 
+	peakPrice := signal.PriceAtSignal
+	entryATR := signal.Indicators.ATR
+
 	trade := &model.Trade{
 		ID:                uuid.New(),
 		SignalID:          &signal.ID,
@@ -187,6 +190,8 @@ func (t *tradeService) ExecuteBuyTrade(ctx context.Context, signal *model.Signal
 		PricePerUnit:      &signal.PriceAtSignal,
 		StopLoss:          &stopLoss,
 		TakeProfit:        &takeProfit,
+		PeakPrice:         &peakPrice,
+		EntryATR:          &entryATR,
 		Status:            model.StatusPending,
 		Metadata: map[string]any{
 			"risk_amount":            riskAmount.String(),

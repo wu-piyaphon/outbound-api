@@ -1,0 +1,2 @@
+ALTER TABLE trades ADD COLUMN peak_price DECIMAL(19,4);
+ALTER TABLE trades ADD COLUMN entry_atr DECIMAL(19,4);

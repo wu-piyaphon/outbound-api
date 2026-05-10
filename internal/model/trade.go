@@ -25,6 +25,8 @@ type Trade struct {
 	FXFeeAmortized    *decimal.Decimal `db:"fx_fee_amortized" json:"fx_fee_amortized"`
 	StopLoss          *decimal.Decimal `db:"stop_loss" json:"stop_loss"`
 	TakeProfit        *decimal.Decimal `db:"take_profit" json:"take_profit"`
+	PeakPrice         *decimal.Decimal `db:"peak_price" json:"peak_price"`
+	EntryATR          *decimal.Decimal `db:"entry_atr" json:"entry_atr"`
 	Status            Status           `db:"status" json:"status"`
 	Metadata          map[string]any   `db:"metadata" json:"metadata"`
 	FilledAt          *time.Time       `db:"filled_at" json:"filled_at"`

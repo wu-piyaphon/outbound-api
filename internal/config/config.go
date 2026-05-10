@@ -86,6 +86,14 @@ type Config struct {
 	// (applied to notional value). Default: 0.0001 (0.01%).
 	// Set via FX_FEE_PCT env var.
 	FXFeePct decimal.Decimal
+
+	// Adaptive shadow exit (ATR-based trailing / break-even) — v2 comparison vs v1 static stops.
+	// BREAK_EVEN_ATR_TRIGGER default 1.0 — profit in ATR units to lift stop to entry.
+	BreakEvenATRTrigger decimal.Decimal
+	// TRAIL_ATR_TRIGGER default 1.5 — profit in ATR units to enable trailing stop.
+	TrailATRTrigger decimal.Decimal
+	// TRAIL_ATR_DISTANCE default 2.0 — trail distance as multiple of entry ATR below peak.
+	TrailATRDistance decimal.Decimal
 }
 
 func Load() (*Config, error) {
@@ -188,6 +196,33 @@ func Load() (*Config, error) {
 	cfg.FXFeePct, err = decimal.NewFromString(fxFeePct)
 	if err != nil {
 		return nil, fmt.Errorf("config: invalid FX_FEE_PCT: %w", err)
+	}
+
+	breakEvenTrig := os.Getenv("BREAK_EVEN_ATR_TRIGGER")
+	if breakEvenTrig == "" {
+		breakEvenTrig = "1.0"
+	}
+	cfg.BreakEvenATRTrigger, err = decimal.NewFromString(breakEvenTrig)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid BREAK_EVEN_ATR_TRIGGER: %w", err)
+	}
+
+	trailTrig := os.Getenv("TRAIL_ATR_TRIGGER")
+	if trailTrig == "" {
+		trailTrig = "1.5"
+	}
+	cfg.TrailATRTrigger, err = decimal.NewFromString(trailTrig)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid TRAIL_ATR_TRIGGER: %w", err)
+	}
+
+	trailDist := os.Getenv("TRAIL_ATR_DISTANCE")
+	if trailDist == "" {
+		trailDist = "2.0"
+	}
+	cfg.TrailATRDistance, err = decimal.NewFromString(trailDist)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid TRAIL_ATR_DISTANCE: %w", err)
 	}
 
 	if err := cfg.validate(); err != nil {

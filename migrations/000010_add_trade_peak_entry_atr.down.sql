@@ -1,0 +1,2 @@
+ALTER TABLE trades DROP COLUMN IF EXISTS peak_price;
+ALTER TABLE trades DROP COLUMN IF EXISTS entry_atr;

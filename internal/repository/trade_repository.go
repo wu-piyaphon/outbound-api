@@ -28,8 +28,8 @@ func NewTradeRepository(pool DBTX) TradeRepository {
 }
 
 const insertTradeQuery = `
-	INSERT INTO trades (id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at) 
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`
+	INSERT INTO trades (id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, peak_price, entry_atr, status, metadata, filled_at, created_at) 
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
 
 func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 	args := []any{
@@ -47,10 +47,12 @@ func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 		trade.FXFeeAmortized,    // $12
 		trade.StopLoss,          // $13
 		trade.TakeProfit,        // $14
-		trade.Status,            // $15
-		trade.Metadata,          // $16
-		trade.FilledAt,          // $17
-		trade.CreatedAt,         // $18
+		trade.PeakPrice,         // $15
+		trade.EntryATR,          // $16
+		trade.Status,            // $17
+		trade.Metadata,          // $18
+		trade.FilledAt,          // $19
+		trade.CreatedAt,         // $20
 	}
 
 	_, err := GetDB(ctx, t.pool).Exec(ctx, insertTradeQuery, args...)
@@ -70,7 +72,7 @@ func (t *tradeRepository) Create(ctx context.Context, trade model.Trade) error {
 // originally ordered amount). Alpaca will reject the sell if fewer shares are
 // held; the cleanup path in EvaluateAndExecuteExits retries on the next bar.
 const getOpenBuyTradesBySymbolQuery = `
-	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at
+	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, peak_price, entry_atr, status, metadata, filled_at, created_at
 	FROM trades
 	WHERE symbol = $1 AND side = 'buy' AND status IN ('open', 'filled') AND NOT EXISTS (
 		SELECT 1 FROM trades sell
@@ -103,6 +105,8 @@ func (t *tradeRepository) GetOpenBuyTradesBySymbol(ctx context.Context, symbol s
 			&trade.FXFeeAmortized,
 			&trade.StopLoss,
 			&trade.TakeProfit,
+			&trade.PeakPrice,
+			&trade.EntryATR,
 			&trade.Status,
 			&trade.Metadata,
 			&trade.FilledAt,
@@ -122,7 +126,7 @@ func (t *tradeRepository) GetOpenBuyTradesBySymbol(ctx context.Context, symbol s
 }
 
 const getByAlpacaOrderIDQuery = `
-	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, status, metadata, filled_at, created_at
+	SELECT id, parent_id, signal_id, account_transfer_id, alpaca_order_id, symbol, side, quantity, price_per_unit, avg_fill_price, commission_fee, fx_fee_amortized, stop_loss, take_profit, peak_price, entry_atr, status, metadata, filled_at, created_at
 	FROM trades
 	WHERE alpaca_order_id = $1`
 
@@ -145,6 +149,8 @@ func (t *tradeRepository) GetByAlpacaOrderID(ctx context.Context, alpacaOrderID 
 		&trade.FXFeeAmortized,
 		&trade.StopLoss,
 		&trade.TakeProfit,
+		&trade.PeakPrice,
+		&trade.EntryATR,
 		&trade.Status,
 		&trade.Metadata,
 		&trade.FilledAt,
@@ -200,7 +206,7 @@ func (t *tradeRepository) HasOpenPosition(ctx context.Context, symbol string) (b
 
 const updateTradeQuery = `
 	UPDATE trades
-	SET parent_id = $2, signal_id = $3, account_transfer_id = $4, alpaca_order_id = $5, symbol = $6, side = $7, quantity = $8, price_per_unit = $9, avg_fill_price = $10, commission_fee = $11, fx_fee_amortized = $12, stop_loss = $13, take_profit = $14, status = $15, metadata = $16, filled_at = $17
+	SET parent_id = $2, signal_id = $3, account_transfer_id = $4, alpaca_order_id = $5, symbol = $6, side = $7, quantity = $8, price_per_unit = $9, avg_fill_price = $10, commission_fee = $11, fx_fee_amortized = $12, stop_loss = $13, take_profit = $14, peak_price = $15, entry_atr = $16, status = $17, metadata = $18, filled_at = $19
 	WHERE id = $1`
 
 func (t *tradeRepository) Update(ctx context.Context, trade model.Trade) error {
@@ -219,9 +225,11 @@ func (t *tradeRepository) Update(ctx context.Context, trade model.Trade) error {
 		trade.FXFeeAmortized,    // $12
 		trade.StopLoss,          // $13
 		trade.TakeProfit,        // $14
-		trade.Status,            // $15
-		trade.Metadata,          // $16
-		trade.FilledAt,          // $17
+		trade.PeakPrice,         // $15
+		trade.EntryATR,          // $16
+		trade.Status,            // $17
+		trade.Metadata,          // $18
+		trade.FilledAt,          // $19
 	}
 
 	_, err := GetDB(ctx, t.pool).Exec(ctx, updateTradeQuery, args...)
