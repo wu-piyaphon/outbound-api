@@ -41,12 +41,26 @@ func NewStreamSupervisor(apiKey, apiSecret string, initialSymbols []string, barC
 }
 
 // Run blocks supervising the bar stream until ctx is cancelled.
+//
+// The Alpaca SDK's Connect returns nil once the websocket handshake completes
+// and then runs the stream in background goroutines; the actual termination
+// error arrives on Terminated(). Treating Connect's nil return as "stream
+// ended" would open a second client while the first is still live and trip
+// Alpaca's one-connection-per-key limit.
 func (s *StreamSupervisor) Run(ctx context.Context) {
 	ConnectWithRetry(ctx, "bar stream", func() error {
 		client := newStocksStreamClient(s.apiKey, s.apiSecret, s.Symbols(), s.barChan)
+		if err := client.Connect(ctx); err != nil {
+			return err
+		}
 		s.setClient(client)
 		defer s.setClient(nil)
-		return client.Connect(ctx)
+		select {
+		case err := <-client.Terminated():
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	})
 }
 
