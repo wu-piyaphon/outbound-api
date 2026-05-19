@@ -38,14 +38,14 @@ func NewMarketDataClient(APIKey, APISecret string) *marketdata.Client {
 	return c
 }
 
-// NewStocksStreamClient creates a WebSocket stocks stream client that forwards
+// newStocksStreamClient creates a WebSocket stocks stream client that forwards
 // incoming bars for symbols into barChan. The caller owns barChan and must
 // ensure it is not closed while the client is running.
 //
 // The handler uses a non-blocking send so a momentarily busy worker pool never
 // stalls the stream callback. When the buffer is full the bar is dropped and
 // logged as a warning so signal starvation is visible in production logs.
-func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan chan<- marketdatastream.Bar) *marketdatastream.StocksClient {
+func newStocksStreamClient(APIKey, APISecret string, symbols []string, barChan chan<- marketdatastream.Bar) *marketdatastream.StocksClient {
 	barHandler := func(bar marketdatastream.Bar) {
 		select {
 		case barChan <- bar:
@@ -63,10 +63,10 @@ func NewStocksStreamClient(APIKey, APISecret string, symbols []string, barChan c
 	return c
 }
 
-// SubscribeToBars adds symbols to an already-connected stream client and wires
+// subscribeToBars adds symbols to an already-connected stream client and wires
 // their bar events to barChan using the same non-blocking handler pattern as
-// NewStocksStreamClient.
-func SubscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdatastream.Bar, symbols ...string) error {
+// newStocksStreamClient.
+func subscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdatastream.Bar, symbols ...string) error {
 	barHandler := func(bar marketdatastream.Bar) {
 		select {
 		case barChan <- bar:
@@ -83,11 +83,11 @@ func SubscribeToBars(c *marketdatastream.StocksClient, barChan chan<- marketdata
 	return nil
 }
 
-// UnsubscribeFromBars removes symbols from the active stream subscription.
-func UnsubscribeFromBars(c *marketdatastream.StocksClient, symbols ...string) error {
+// unsubscribeFromBars removes symbols from the active stream subscription.
+func unsubscribeFromBars(c *marketdatastream.StocksClient, symbols ...string) error {
 	err := c.UnsubscribeFromBars(symbols...)
 	if err != nil {
-		return fmt.Errorf("UnsubscribeFromBars: %w", err)
+		return fmt.Errorf("unsubscribeFromBars: %w", err)
 	}
 
 	return nil

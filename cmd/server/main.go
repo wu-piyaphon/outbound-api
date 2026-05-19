@@ -91,47 +91,6 @@ func seedRegime(symbol string, client *marketdata.Client, cache *indicator.Regim
 	slog.Info("seedRegime: ready", "symbol", symbol, "risk_on", cache.IsRiskOn())
 }
 
-// connectWithRetry runs connectFn in a loop, backing off exponentially after
-// each failure. It returns only when ctx is cancelled.
-//
-// After any return from connectFn, ctx is checked first — both nil and error
-// returns can result from context cancellation. If nil is returned without
-// context cancellation (unexpected SDK behaviour), the backoff is reset and the
-// connection is retried immediately so the supervisor does not stop silently.
-func connectWithRetry(ctx context.Context, name string, connectFn func() error) {
-	const maxDelay = 64 * time.Second
-	delay := time.Second
-
-	for {
-		slog.Info("connecting", "stream", name)
-		err := connectFn()
-
-		// Check context before inspecting the error — the SDK may return nil on
-		// a context-cancelled disconnect (clean shutdown) or an error wrapping
-		// context.Canceled.
-		if ctx.Err() != nil {
-			return
-		}
-
-		if err != nil {
-			slog.Warn("stream disconnected", "stream", name, "error", err, "retry_in", delay)
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return
-			}
-			if delay < maxDelay {
-				delay *= 2
-			}
-		} else {
-			// SDK returned nil without context cancellation — unexpected clean
-			// disconnect. Reset backoff (connection was healthy) and retry.
-			slog.Warn("stream closed without error; reconnecting immediately", "stream", name)
-			delay = time.Second
-		}
-	}
-}
-
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -230,7 +189,7 @@ func main() {
 	// Buffered to absorb bursts; excess bars are dropped with a log warning.
 	barChan := make(chan stream.Bar, 200)
 
-	streamClient := alpaca.NewStocksStreamClient(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists, barChan)
+	streamSupervisor := alpaca.NewStreamSupervisor(cfg.AlpacaAPIKey, cfg.AlpacaAPISecret, watchlists, barChan)
 
 	// wg tracks all long-lived goroutines so main can wait for a clean drain on shutdown.
 	var wg sync.WaitGroup
@@ -238,9 +197,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		connectWithRetry(streamCtx, "bar stream", func() error {
-			return streamClient.Connect(streamCtx)
-		})
+		streamSupervisor.Run(streamCtx)
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -254,11 +211,6 @@ func main() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
-		subscribed := make(map[string]struct{})
-		for _, s := range watchlists {
-			subscribed[s] = struct{}{}
-		}
-
 		for {
 			select {
 			case <-ticker.C:
@@ -268,47 +220,46 @@ func main() {
 					continue
 				}
 
-				currentSet := make(map[string]struct{})
+				currentSet := make(map[string]struct{}, len(fetchedWatchlists))
 				for _, s := range fetchedWatchlists {
 					currentSet[s] = struct{}{}
+				}
+
+				subscribedSet := make(map[string]struct{})
+				for _, s := range streamSupervisor.Symbols() {
+					subscribedSet[s] = struct{}{}
 				}
 
 				var newSymbols, removedSymbols []string
 
 				for s := range currentSet {
-					if _, exist := subscribed[s]; !exist {
+					if _, exist := subscribedSet[s]; !exist {
 						newSymbols = append(newSymbols, s)
 					}
 				}
 
-				for s := range subscribed {
+				for s := range subscribedSet {
 					if _, exist := currentSet[s]; !exist {
 						removedSymbols = append(removedSymbols, s)
 					}
 				}
 
 				if len(newSymbols) > 0 {
-					err = alpaca.SubscribeToBars(streamClient, barChan, newSymbols...)
-					if err != nil {
+					if err := streamSupervisor.Subscribe(newSymbols...); err != nil {
 						slog.Error("watchlist refresh: failed to subscribe to new symbols", "symbols", newSymbols, "error", err)
 					} else {
 						slog.Info("watchlist refresh: subscribed to new symbols", "symbols", newSymbols)
 						for _, s := range newSymbols {
-							subscribed[s] = struct{}{}
 							seedIndicators(s, marketDataClient, indicatorCache)
 						}
 					}
 				}
 
 				if len(removedSymbols) > 0 {
-					err = alpaca.UnsubscribeFromBars(streamClient, removedSymbols...)
-					if err != nil {
+					if err := streamSupervisor.Unsubscribe(removedSymbols...); err != nil {
 						slog.Error("watchlist refresh: failed to unsubscribe from symbols", "symbols", removedSymbols, "error", err)
 					} else {
 						slog.Info("watchlist refresh: unsubscribed from symbols", "symbols", removedSymbols)
-						for _, s := range removedSymbols {
-							delete(subscribed, s)
-						}
 					}
 				}
 
@@ -380,7 +331,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		connectWithRetry(streamCtx, "trade updates stream", func() error {
+		alpaca.ConnectWithRetry(streamCtx, "trade updates stream", func() error {
 			return alpaca.StreamTradeUpdates(streamCtx, alpacaClient, tradeUpdateChan)
 		})
 	}()
